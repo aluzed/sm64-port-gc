@@ -66,6 +66,25 @@
 #define GFX_GX_HW_PERSP 1
 #endif
 
+// Distance fog. Set to 0 to drop the fog stage entirely, which is the A/B to
+// run whenever a scene looks washed out: an over-applied fog and a missing
+// texture are hard to tell apart by eye.
+#ifndef GFX_GX_FOG
+#define GFX_GX_FOG 1
+#endif
+
+// The debug views that replace the whole TEV chain with a single PASSCLR stage
+// and paint the vertex colour directly. They bypass the shader, so anything the
+// shader would have set up -- the fog channel, for one -- must be skipped at
+// submission time too, or the vertex descriptor stops matching the pipeline.
+#if defined(GFX_GX_DEBUG_UV) || defined(GFX_GX_DEBUG_BATCH) || defined(GFX_GX_DEBUG_DEPTH) \
+    || defined(GFX_GX_DEBUG_ZSTATE) || defined(GFX_GX_DEBUG_INPUTS) \
+    || defined(GFX_GX_DEBUG_CC)
+#define GFX_GX_FLAT_DEBUG 1
+#else
+#define GFX_GX_FLAT_DEBUG 0
+#endif
+
 // Worst case is: one stage to stash texel1, two for the general colour form,
 // and the alpha form padded to match. Eight leaves room for STORY-010.
 #define MAX_TEV_STAGES 8
@@ -76,6 +95,7 @@
 
 struct TevStage {
     u8 tex_coord, tex_map;
+    u8 chan;                         // GX_COLOR0A0 (shade) or GX_COLOR1A1 (fog)
     u8 col_a, col_b, col_c, col_d;   // GX_CC_*
     u8 alp_a, alp_b, alp_c, alp_d;   // GX_CA_*
     u8 col_op, alp_op;               // GX_TEV_ADD / GX_TEV_SUB
@@ -337,6 +357,7 @@ static void gfx_gx_build_tev(struct ShaderProgram *prg, int varying_input) {
         s->col_clamp = s->alp_clamp = GX_TRUE;
         s->out_reg = gfx_gx_tev_reg_id(prg->texel1_reg);
         s->alpha_konst_one = false;
+        s->chan = GX_COLOR0A0;
     }
 
     struct TevForm col, alp;
@@ -365,6 +386,7 @@ static void gfx_gx_build_tev(struct ShaderProgram *prg, int varying_input) {
         s->tex_map = use_tex0 ? GX_TEXMAP0 : GX_TEXMAP_NULL;
         s->out_reg = GX_TEVPREV;
         s->alpha_konst_one = false;
+        s->chan = GX_COLOR0A0;
 
         if (i < col.count) {
             s->col_a = gfx_gx_item_to_colour(prg, col.a[i]);
@@ -406,13 +428,52 @@ static void gfx_gx_build_tev(struct ShaderProgram *prg, int varying_input) {
         }
     }
 
+    // Fog, as one final stage.
+    //
+    // The reference backend computes mix(colour, fog.rgb, fog.a) on the colour
+    // only, leaving alpha alone. A TEV stage is exactly that interpolation:
+    //   out = d + (1 - c) * a + c * b
+    // so with d = 0, a = CPREV, b = the fog colour and c = the fog factor it is
+    // the mix, in one stage and with no arithmetic of our own.
+    //
+    // GX has no fog input, but it has a second rasterised colour channel. The
+    // factor is per vertex -- gfx_pc computes it from the N64's fog_mul and
+    // fog_offset and stores it in the vertex alpha, forcing shade alpha to 1.0
+    // to free the slot -- so the colour and the factor travel together as the
+    // RGBA of GX_COLOR1A1, read here as RASC and RASA.
+    //
+    // GX_SetFog was rejected: it derives the factor from screen Z on its own
+    // curve, which would not match what gfx_pc computed.
+    if (cc->opt_fog && GFX_GX_FOG && stage < MAX_TEV_STAGES) {
+        struct TevStage *s = &prg->stages[stage++];
+        s->tex_coord = GX_TEXCOORDNULL;
+        s->tex_map = GX_TEXMAP_NULL;
+        s->chan = GX_COLOR1A1;
+        s->col_a = GX_CC_CPREV; s->col_b = GX_CC_RASC; s->col_c = GX_CC_RASA;
+        s->col_d = GX_CC_ZERO;
+        s->col_op = GX_TEV_ADD;
+        s->col_clamp = GX_TRUE;
+        s->out_reg = GX_TEVPREV;
+
+        // Alpha passes through untouched, or stays pinned at 1.0 when the
+        // combiner has no alpha channel.
+        s->alp_a = GX_CA_ZERO; s->alp_b = GX_CA_ZERO; s->alp_c = GX_CA_ZERO;
+        s->alp_op = GX_TEV_ADD;
+        s->alp_clamp = GX_TRUE;
+        if (!cc->opt_alpha || !GFX_GX_TEXTURES_IMPLEMENTED) {
+            s->alp_d = GX_CA_KONST;
+            s->alpha_konst_one = true;
+        } else {
+            s->alp_d = GX_CA_APREV;
+            s->alpha_konst_one = false;
+        }
+    }
+
     prg->num_stages = (uint8_t) stage;
 }
 
 static void gfx_gx_emit_tev(const struct ShaderProgram *prg) {
-#if defined(GFX_GX_DEBUG_UV) || defined(GFX_GX_DEBUG_BATCH) || defined(GFX_GX_DEBUG_DEPTH) \
-    || defined(GFX_GX_DEBUG_ZSTATE) || defined(GFX_GX_DEBUG_INPUTS) \
-    || defined(GFX_GX_DEBUG_CC)
+#if GFX_GX_FLAT_DEBUG
     // Flat view: one PASSCLR stage so the vertex colour reaches the screen
     // untouched. draw_triangles feeds it frac(u), frac(v), which turns texture
     // coordinates into a picture -- smooth ramps mean sane coordinates, flat
@@ -434,13 +495,23 @@ static void gfx_gx_emit_tev(const struct ShaderProgram *prg) {
         GX_SetNumTexGens(0);
     }
 
+    // A second rasterised channel exists only to carry the fog colour and
+    // factor. Enabling it unconditionally would cost a channel on every shader.
+    if (prg->cc.opt_fog && GFX_GX_FOG) {
+        GX_SetNumChans(2);
+        GX_SetChanCtrl(GX_COLOR1A1, GX_DISABLE, GX_SRC_REG, GX_SRC_VTX, 0,
+                       GX_DF_NONE, GX_AF_NONE);
+    } else {
+        GX_SetNumChans(1);
+    }
+
     for (int i = 0; i < prg->num_stages; i++) {
         const struct TevStage *s = &prg->stages[i];
         const u8 st = GX_TEVSTAGE0 + i;
 
         // Stages that use no texture must be given the null coordinate and null
         // map, or they sample whatever is left in texture memory.
-        GX_SetTevOrder(st, s->tex_coord, s->tex_map, GX_COLOR0A0);
+        GX_SetTevOrder(st, s->tex_coord, s->tex_map, s->chan);
 
         GX_SetTevColorIn(st, s->col_a, s->col_b, s->col_c, s->col_d);
         GX_SetTevColorOp(st, s->col_op, GX_TB_ZERO, GX_CS_SCALE_1, s->col_clamp, s->out_reg);
@@ -561,6 +632,47 @@ static uint32_t texture_pool_size;
 // upload has to remember which one that was.
 static uint32_t cur_tex_id[2];
 static int last_selected_tile;
+
+// Bound whenever the texture a shader asks for has no valid object. Skipping
+// the load instead leaves the *previous* texture bound, so the surface silently
+// wears whatever was drawn before it -- a bug that reads as "the texture is
+// missing" while looking like anything at all.
+//
+// White is the graceful fallback: a shader multiplying by white renders as if
+// untextured. -DGFX_GX_DEBUG_TEXFAIL makes it magenta instead, which tells
+// "the texture object was never valid" apart from "it is valid but wrong" in
+// one run.
+static GXTexObj fallback_tex_obj;
+static bool fallback_tex_ready;
+
+static void gfx_gx_init_fallback_texture(void) {
+    // One 4x4 GX_TF_RGBA8 tile: 32 bytes of AR pairs, then 32 of GB.
+    static u8 texels[64] __attribute__((aligned(32)));
+#ifdef GFX_GX_DEBUG_TEXFAIL
+    const u8 r = 255, g = 0, b = 255;
+#else
+    const u8 r = 255, g = 255, b = 255;
+#endif
+    for (int i = 0; i < 16; i++) {
+        texels[i * 2]          = 255;   // A
+        texels[i * 2 + 1]      = r;
+        texels[32 + i * 2]     = g;
+        texels[32 + i * 2 + 1] = b;
+    }
+    DCFlushRange(texels, sizeof(texels));
+    GX_InitTexObj(&fallback_tex_obj, texels, 4, 4, GX_TF_RGBA8,
+                  GX_REPEAT, GX_REPEAT, GX_FALSE);
+    GX_InitTexObjFilterMode(&fallback_tex_obj, GX_NEAR, GX_NEAR);
+    fallback_tex_ready = true;
+}
+
+static void gfx_gx_bind_texture(const struct GXTexture *t, u8 map) {
+    if (t->obj_valid) {
+        GX_LoadTexObj((GXTexObj *) &t->obj, map);
+    } else if (fallback_tex_ready) {
+        GX_LoadTexObj(&fallback_tex_obj, map);
+    }
+}
 
 static uint8_t gfx_gx_cm_to_gx(uint32_t val) {
     // Same precedence as gfx_opengl.c: clamp wins over mirror.
@@ -831,29 +943,48 @@ static bool gfx_gx_setup_perspective(const float *buf, size_t stride, size_t nve
     const float q = (zn_hi - zn_lo) / (iw_hi - iw_lo);
     const float p = zn_lo - q * iw_lo;
 
-    // Validate on the vertex furthest from both anchors.
-    size_t mid = lo;
-    float best = -1.0f;
+    // Validate on every vertex, not on a sample.
+    //
+    // This used to check the single vertex furthest from both anchors. Two
+    // points define the line and a third confirms it only if the relation is
+    // known to be affine -- which is exactly what is in question. A batch whose
+    // depth is not affine in 1/w, because gfx_pc changed projection inside it,
+    // slips through a one-point check and is then drawn through a projection
+    // fitted to something else. The mesh comes out as a fan of stretched
+    // slivers, which on screen reads as a crosshatch of thin lines, and
+    // whatever leaves the [-1, 0] range is clipped away outright -- a floor
+    // that disappears.
+    //
+    // The residual is judged against the batch's own depth spread, not an
+    // absolute epsilon: an object occupying 2% of the depth range would accept
+    // a fit 5% wrong across itself under a 1e-3 absolute tolerance, enough to
+    // scramble which of its own polygons is in front.
+    //
+    // The floor under that tolerance has to track the magnitude of the terms,
+    // not be a fixed epsilon. p is computed as zn_lo - q * iw_lo, a difference
+    // of two quantities that can both be large, so single precision loses
+    // digits exactly where the spread is smallest. A fixed 1e-6 floor rejected
+    // batches that were perfectly affine and merely noisy, sending them to the
+    // CPU divide -- whose affine interpolation is what makes a texture stretch
+    // across a large polygon.
+    const float zn_span = fabsf(zn_hi - zn_lo);
+    const float scale = fabsf(p) + fabsf(q) * iw_hi;
+    const float tol = fmaxf(0.02f * zn_span, 1e-5f * fmaxf(scale, 1.0f));
+
+    // Rejecting a batch because the fit puts a vertex outside [0, 1] would buy
+    // nothing: GX clips z_ndc outside [-1, 0] whichever path produced it, and
+    // the CPU path writes zn - 1, so the same vertex is cut either way. All
+    // that matters here is whether the fit is faithful.
     for (size_t i = 0; i < nverts; i++) {
         const float w = buf[i * stride + 3];
         if (w <= 1e-6f) {
             continue;
         }
         const float iw = 1.0f / w;
-        const float d = fminf(fabsf(iw - iw_lo), fabsf(iw - iw_hi));
-        if (d > best) { best = d; mid = i; }
-    }
-    const float iw_m = 1.0f / buf[mid * stride + 3];
-    const float zn_m = buf[mid * stride + 2] * iw_m;
-
-    // The residual has to be judged against the batch's own depth spread, not
-    // against an absolute epsilon. A head occupies about 2% of the depth range,
-    // so a 1e-3 absolute tolerance accepts a fit that is 5% wrong across the
-    // object -- enough to scramble which of its own polygons is in front.
-    const float zn_span = fabsf(zn_hi - zn_lo);
-    const float tol = fmaxf(0.02f * zn_span, 1e-6f);
-    if (fabsf((p + q * iw_m) - zn_m) > tol) {
-        return false;
+        const float zn = buf[i * stride + 2] * iw;
+        if (fabsf((p + q * iw) - zn) > tol) {
+            return false;
+        }
     }
 
     // GX gives z_ndc = -mt22 + mt23/w, and the CPU path writes z_ndc = zn - 1
@@ -946,6 +1077,14 @@ static void gfx_gx_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t bu
     GX_SetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
     GX_SetVtxDesc(GX_VA_CLR0, GX_DIRECT);
     GX_SetVtxAttrFmt(GX_VTXFMT0, GX_VA_CLR0, GX_CLR_RGBA, GX_RGBA8, 0);
+    // The fog colour and factor ride the second colour channel; see the fog
+    // stage in gfx_gx_build_tev. The attribute order below must match the order
+    // the vertices are written in, POS, CLR0, CLR1, TEX0.
+    const bool submit_fog = cc->opt_fog && GFX_GX_FOG && !GFX_GX_FLAT_DEBUG;
+    if (submit_fog) {
+        GX_SetVtxDesc(GX_VA_CLR1, GX_DIRECT);
+        GX_SetVtxAttrFmt(GX_VTXFMT0, GX_VA_CLR1, GX_CLR_RGBA, GX_RGBA8, 0);
+    }
     if (submit_tex) {
         GX_SetVtxDesc(GX_VA_TEX0, GX_DIRECT);
         GX_SetVtxAttrFmt(GX_VTXFMT0, GX_VA_TEX0, GX_TEX_ST, GX_F32, 0);
@@ -953,15 +1092,11 @@ static void gfx_gx_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t bu
 
     if (cc->used_textures[0] && GFX_GX_TEXTURES_IMPLEMENTED) {
         struct GXTexture *t0 = &texture_pool[cur_tex_id[0]];
-        if (t0->obj_valid) {
-            GX_LoadTexObj(&t0->obj, GX_TEXMAP0);
-        }
+        gfx_gx_bind_texture(t0, GX_TEXMAP0);
     }
     if (cc->used_textures[1] && GFX_GX_TEXTURES_IMPLEMENTED) {
         struct GXTexture *t1 = &texture_pool[cur_tex_id[1]];
-        if (t1->obj_valid) {
-            GX_LoadTexObj(&t1->obj, GX_TEXMAP1);
-        }
+        gfx_gx_bind_texture(t1, GX_TEXMAP1);
     }
 
     // CPU divide, always, with an identity orthographic projection downstream.
@@ -1082,6 +1217,13 @@ static void gfx_gx_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t bu
         }
 #endif
 
+        if (submit_fog) {
+            // rgb = fog colour, a = the fog factor gfx_pc computed per vertex.
+            const float *f = v + 4 + (tex_in_buffer ? 2 : 0);
+            GX_Color4u8(float_to_u8(f[0]), float_to_u8(f[1]), float_to_u8(f[2]),
+                        float_to_u8(f[3]));
+        }
+
         if (submit_tex) {
             GX_TexCoord2f32(v[tex_off], v[tex_off + 1]);
         }
@@ -1109,6 +1251,11 @@ static void gfx_gx_init(void) {
     // CPU, so the vertex colour must reach the TEV untouched.
     GX_SetNumChans(1);
     GX_SetChanCtrl(GX_COLOR0A0, GX_DISABLE, GX_SRC_REG, GX_SRC_VTX, 0, GX_DF_NONE, GX_AF_NONE);
+    // The fog stage reads this one; it is only switched on for shaders that
+    // carry opt_fog, but the control has to be configured once.
+    GX_SetChanCtrl(GX_COLOR1A1, GX_DISABLE, GX_SRC_REG, GX_SRC_VTX, 0, GX_DF_NONE, GX_AF_NONE);
+
+    gfx_gx_init_fallback_texture();
 
     GX_SetCullMode(GX_CULL_NONE);
     GX_SetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
