@@ -106,6 +106,21 @@ static void gfx_ogc_init_video(void) {
     // component cable is present. Picking a mode by hand is STORY-011.
     rmode = VIDEO_GetPreferredMode(NULL);
 
+    // Take a private copy and force anti-aliasing off.
+    //
+    // With aa the EFB has to be configured as GX_PF_RGB565_Z16, i.e. a 16-bit
+    // depth buffer. SM64 layers coplanar decals -- the sclera, iris and pupil of
+    // Mario's eyes, Mario's shadow, painting surfaces -- separated by a very
+    // small delta in z. At 16 bits those deltas quantise to the same value, the
+    // ordering collapses to "last drawn wins", and the pupil ends up behind the
+    // white of the eye.
+    //
+    // 24-bit depth is worth more to this port than edge anti-aliasing.
+    static GXRModeObj mode_copy;
+    mode_copy = *rmode;
+    mode_copy.aa = 0;
+    rmode = &mode_copy;
+
     // MEM_K0_TO_K1 is mandatory: the XFB must be accessed uncached, otherwise
     // the display shows stale or corrupted data.
     xfb[0] = MEM_K0_TO_K1(SYS_AllocateFramebuffer(rmode));

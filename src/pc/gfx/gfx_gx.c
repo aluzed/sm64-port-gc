@@ -55,6 +55,12 @@
 // which we keep as the accumulator.
 #define NUM_TEV_REGS 3
 
+// How far a ZMODE_DEC decal is pulled towards the viewer, in NDC. Stands in for
+// the N64's decal bias, which OpenGL emulates with glPolygonOffset. Small enough
+// not to punch a decal through geometry in front of it, large enough to clear
+// the depth quantisation on the surface it sits on.
+#define GFX_GX_DECAL_BIAS 0.0008f
+
 struct TevStage {
     u8 tex_coord, tex_map;
     u8 col_a, col_b, col_c, col_d;   // GX_CC_*
@@ -117,8 +123,15 @@ static void gfx_gx_apply_zmode(void) {
     GX_SetZMode(GX_FALSE, GX_ALWAYS, GX_FALSE);
     return;
 #endif
-    // A decal (Mario's shadow, footprints) must test against the surface it
-    // sits on but never write depth, otherwise it fights with it.
+    // A decal (Mario's shadow, the sclera/iris/pupil layers of his eyes,
+    // painting surfaces) must test against the surface it sits on but never
+    // write depth, otherwise it fights with it.
+    //
+    // Not writing is only half of it: the N64's ZMODE_DEC also biases the decal
+    // *towards the viewer*, which is what OpenGL emulates with glPolygonOffset.
+    // Without that bias a decal sitting a hair behind its host surface loses
+    // GX_LEQUAL and disappears -- the pupil ends up behind the white of the eye.
+    // The bias itself is applied per vertex in draw_triangles.
     if (gx_state.zmode_decal) {
         GX_SetZMode(GX_TRUE, GFX_GX_ZFUNC_NEARER, GX_FALSE);
         return;
@@ -445,11 +458,22 @@ static void gfx_gx_emit_tev(const struct ShaderProgram *prg) {
     // still occlude whatever is behind them.
     if (prg->cc.opt_texture_edge) {
         GX_SetAlphaCompare(GX_GREATER, 76, GX_AOP_AND, GX_ALWAYS, 0);  // 0.3 * 255
-        GX_SetZCompLoc(GX_FALSE);
     } else {
         GX_SetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
-        GX_SetZCompLoc(GX_TRUE);
     }
+
+    // Z after the alpha stage, always.
+    //
+    // GX's default is to test and write depth *before* texturing and the alpha
+    // test, which is faster but means a fully transparent texel still stamps its
+    // depth. SM64 layers cut-out sprites over each other -- the sclera, iris and
+    // pupil of Mario's eyes are the clearest case -- and with the early Z the
+    // transparent border of one layer occludes the layer drawn on top of it, so
+    // the pupil ends up behind the white of the eye.
+    //
+    // The cost is losing early-Z rejection. Correctness first; STORY-018 can
+    // measure whether it is worth restoring for the opaque shaders.
+    GX_SetZCompLoc(GX_FALSE);
 
 #ifdef GFX_GX_DEBUG_ALPHA
     // Shows the combiner's alpha output as greyscale, by appending one stage
@@ -939,7 +963,12 @@ static void gfx_gx_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t bu
     }
 
     // Hardware divide when the batch has real perspective, CPU divide otherwise.
-    const bool hw_persp = gfx_gx_setup_perspective(buf_vbo, stride, num_verts);
+    //
+    // Decals are forced onto the CPU path: the hardware projection derives depth
+    // from w alone, which is exactly the information a decal does *not* differ
+    // in from its host surface, and it leaves no way to apply the bias below.
+    const bool hw_persp = !gx_state.zmode_decal
+                       && gfx_gx_setup_perspective(buf_vbo, stride, num_verts);
     if (!hw_persp) {
         gfx_gx_load_ortho();
     }
@@ -966,7 +995,12 @@ static void gfx_gx_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t bu
             // the comparison to GX_GEQUAL hid it while leaving the sort order
             // wrong. Verify with -DGFX_GX_DEBUG_DEPTH: the bottom of the screen
             // (floor, near the camera) must be the *bright* end.
-            GX_Position3f32(v[0] * inv_w, v[1] * inv_w, -(v[2] * inv_w));
+            // GX's near plane is -1, so biasing a decal towards the viewer
+            // means going more negative.
+            const float bias = gx_state.zmode_decal ? -GFX_GX_DECAL_BIAS : 0.0f;
+            float z = -(v[2] * inv_w) + bias;
+            if (z < -1.0f) z = -1.0f;
+            GX_Position3f32(v[0] * inv_w, v[1] * inv_w, z);
         }
 
 #if defined(GFX_GX_DEBUG_CC)
@@ -1006,7 +1040,15 @@ static void gfx_gx_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t bu
         {
             const float w = v[3];
             const float zn = (w != 0.0f) ? (v[2] / w) : 0.0f;
+#ifdef GFX_GX_DEBUG_DEPTH_FINE
+            // 8-bit greyscale cannot resolve better than 1/255, which is far
+            // coarser than the depth separation between layered decals. Show
+            // the low bits instead: differences of ~1/1024 become full swings.
+            const float frac = zn * 1024.0f - floorf(zn * 1024.0f);
+            const u8 g = float_to_u8(frac);
+#else
             const u8 g = float_to_u8(zn);
+#endif
             GX_Color4u8(g, g, g, 255);
         }
 #elif defined(GFX_GX_DEBUG_BATCH)

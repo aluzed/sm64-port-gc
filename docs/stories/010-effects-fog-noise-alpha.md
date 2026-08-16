@@ -104,6 +104,46 @@ the scenery" bug.
 Remember to restore `GX_SetAlphaCompare(GX_ALWAYS, …)` and `GX_SetZCompLoc(GX_TRUE)` when the
 option is not active, through the STORY-006 state cache.
 
+### Open defect: layered face decals lose the depth test
+
+**The clearest reproduction in the game is the intro Mario head: the pupil renders behind the
+white of the eye.** The eyebrows, moustache and sideburns are affected the same way.
+
+The decisive measurement: with `-DGFX_GX_DEBUG_NO_DEPTH` the face is **perfect** — eyebrows,
+sclera, blue iris, black pupil, glint, moustache, all correct. So geometry, textures, colours,
+combiner and submission order are all right, and painter's order alone produces the intended
+image. **Only the depth test is rejecting the later layers.**
+
+Depth separation between a layer and the face beneath it, read with
+`-DGFX_GX_DEBUG_DEPTH -DGFX_GX_DEBUG_DEPTH_FINE` (which shows the low bits of `zn`, one unit
+≈ 3.8e-6):
+
+| Sample | low bits |
+|---|---|
+| left pupil / left cheek | 155 / 153 |
+| right pupil / right cheek | 123 / 113 |
+| nose | 30 |
+| eyebrow | 106 |
+
+So Δ`zn` ≈ 1e-5 to 4e-5 — small, but roughly 170 to 670 levels in a 24-bit buffer, far from
+the quantisation floor.
+
+Ruled out by measurement, each with one build:
+
+| Hypothesis | Result |
+|---|---|
+| The per-batch hardware projection collapses the layers | no change with `-DGFX_GX_DEBUG_NO_HWPERSP` |
+| Anti-aliasing forces a 16-bit Z buffer | no change with `aa` forced off (kept anyway: 24-bit depth is worth more here than edge AA) |
+| Missing ZMODE_DEC bias | no change with a 8e-4 NDC bias — so these layers are not flagged as decals |
+| `GX_SetZCompLoc(GX_TRUE)` lets transparent texels stamp depth | no change with it forced to `GX_FALSE` (kept anyway: it is the correct setting for layered cut-outs) |
+| Inverted comparison | `GX_GEQUAL` is worse — the background then covers everything |
+
+**Next step, and it must be a measurement rather than another hypothesis:** the samples above
+read the *topmost* surface at each pixel, so they cannot separate the pupil's own depth from
+the sclera's. Add a debug that renders only a chosen range of draw calls, isolate the eye
+layers, and read each one's depth directly. That answers whether the later layer is genuinely
+farther — and if it is, the question moves upstream to what `gfx_pc` hands us.
+
 ### 3. Z decal
 
 The OpenGL backend uses `glPolygonOffset`. GX has no direct equivalent; options, by preference:
