@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<app version="1">
+  <name>Super Mario 64</name>
+  <coder>sm64-port contributors</coder>
+  <version>@VERSION@</version>
+  <release_date>@DATE@</release_date>
+  <short_description>Super Mario 64, native on Wii</short_description>
+  <long_description>A native Wii build of the Super Mario 64 decompilation, rendered
+through GX rather than an emulator.
+
+Progress is saved to sd:/sm64/. Play with a GameCube controller in port 1.
+
+This build contains assets extracted from a Super Mario 64 ROM you supplied
+yourself at build time. Do not redistribute it.</long_description>
+</app>

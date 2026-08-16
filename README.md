@@ -46,14 +46,18 @@ version control, and compiled binaries must not be redistributed.
 
 ### GameCube / Wii (devkitPPC)
 
-> **Status: in development.** `make TARGET_WII=1` and `make TARGET_GC=1` produce a `.dol` that
-> boots and runs at the correct 29.97 fps under Dolphin, with no exceptions. Build system,
-> video (libogc VIDEO/GX), GameCube controller, GX renderer and textures are in place: the
-> game reaches the title screen and plays its attract-mode demo, rendering level geometry,
-> character models, textures and a pixel-perfect HUD in correct perspective. Still missing:
-> **audio**, the **PAL 50 Hz cadence** fix, several **combiner effects** (fog, alpha compare,
-> decals), and **Wii Remote support**. Not yet tested on real hardware.
-> Track progress in [`docs/stories/`](docs/stories/README.md).
+> **Status: playable, not finished.** `make TARGET_WII=1` and `make TARGET_GC=1` produce a
+> `.dol` that boots and runs at the correct 30 fps under Dolphin, in 60 Hz and in 50 Hz alike.
+> In place: build system, video (libogc VIDEO/GX), GX renderer with textures and the colour
+> combiner translated to TEV, distance fog, 32 kHz stereo audio, GameCube controller, and
+> saves on both a memory card and SD.
+>
+> Still missing: **Wii Remote support**, video mode selection and 16:9, and two combiner
+> effects (noise dithering, Z decal validation). Two rendering defects are open: the water
+> surface flickers out for an instant, and some surfaces occasionally lose their texture.
+>
+> **Nothing has ever run on real hardware.** Dolphin hides exactly the class of fault that
+> bites on a console. Track progress in [`docs/stories/`](docs/stories/README.md).
 
 #### Dependencies
 
@@ -129,7 +133,16 @@ backwards compatibility.
    make TARGET_GC=1  -j8        # GameCube
    ```
 3. The output lands in `build/<VERSION>_wii/sm64.<VERSION>.dol` (resp. `_gc`), around 12 MiB.
-4. `make TARGET_WII=1 dist` packages `dist/sm64/` with `boot.dol`, `meta.xml` and `icon.png`.
+4. Package it:
+   ```sh
+   make TARGET_WII=1 dist      # dist/sm64/     boot.dol + meta.xml + icon.png
+   make TARGET_GC=1  dist      # dist/sm64-gc/  sm64.dol + README.txt
+   ```
+   `meta.xml` takes its version from `git describe`, so a build made from uncommitted changes
+   is marked `-dirty` — worth having when a `.dol` turns up on a memory card months later.
+
+`dist/` is git-ignored on purpose: the binaries in it have ROM-extracted assets compiled in
+and must not be redistributed. Share the source and let people build their own.
 
 PC and console builds use separate build directories, so they coexist without `make clean`.
 If you switch host platforms, run `make -C tools clean` so the host tools are rebuilt.
@@ -145,7 +158,27 @@ If you switch host platforms, run `make -C tools clean` so the host tools are re
 Dolphin is the fast iteration loop, but it is more forgiving than real hardware: it hides
 missing `DCFlushRange` calls, misaligned buffers and audio DMA underruns. Validate each
 milestone on a real console — see
-[STORY-017](docs/stories/017-tests-dolphin-materiel.md).
+[STORY-017](docs/stories/017-testing-dolphin-hardware.md).
+
+#### Where progress is saved
+
+Nothing has to be configured; the game picks the first thing it finds.
+
+| Console | Order | Result |
+|---|---|---|
+| GameCube | memory card slot 1, then slot 2 | `sm64_save_file.bin`, two blocks, listed in the console's card manager |
+| GameCube | then Serial Port 2 (SD2SP2), then an SD Gecko | `/sm64/` on the card |
+| Wii | SD card, then USB | `sd:/sm64/` |
+
+Two blocks rather than one because the file is written alternately across them: a power cut
+during a save costs the new one and never the one before it. The SD path gets the same
+guarantee through a temporary file and a rename.
+
+The SD format is byte-identical to the PC build's, so a save can be carried between them; the
+memory card format cannot. Build with `-DSTORAGE_OGC_PREFER_FAT=1` to keep saves on SD even
+when a memory card is present.
+
+With no storage at all the game runs normally and simply does not save.
 
 #### Controls
 

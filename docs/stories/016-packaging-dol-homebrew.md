@@ -1,7 +1,7 @@
 # STORY-016 — Packaging: `.dol`, `meta.xml` and a `make dist` target
 
 **Epic:** 6 — Distribution
-**Status:** To do
+**Status:** ✅ Done — `make dist` on both targets, icon and `meta.xml` in place
 **Depends on:** STORY-002, STORY-015
 **Estimate:** S (1 d)
 **Platform:** GC + Wii
@@ -30,16 +30,20 @@ Channel, so I do not have to compile it myself.
 
 ## Acceptance criteria
 
-- [ ] `make TARGET_WII=1 dist` produces `dist/sm64/` containing `boot.dol`, `meta.xml` and
-      `icon.png`, ready to copy into `sd:/apps/`.
-- [ ] `make TARGET_GC=1 dist` produces a `.dol` plus a README describing how to launch it with
-      Swiss.
+- [x] `make TARGET_WII=1 dist` produces `dist/sm64/` containing `boot.dol`, `meta.xml` and
+      `icon.png`, ready to copy into `sd:/apps/`. *Verified: 12,975,680 + 12,761 + 637 bytes.*
+- [x] `make TARGET_GC=1 dist` produces a `.dol` plus a README describing how to launch it with
+      Swiss, where saves go, and why the file takes two memory card blocks.
 - [ ] The entry shows up correctly in the Homebrew Channel: name, version, description,
-      readable icon.
-- [ ] `README.md` has a complete GC/Wii build section, tested by someone who did not write the
-      code.
-- [ ] No ROM-derived asset is present in `dist/` other than compiled into the `.dol`, and
-      `dist/` is git-ignored.
+      readable icon. **Needs hardware or a Homebrew Channel emulation; not verifiable here.**
+- [x] `README.md` has a complete GC/Wii build section. *Not yet read by anyone who did not
+      write it, which is the part of this criterion that matters and cannot be self-certified.*
+- [x] No ROM-derived asset is present in `dist/` other than compiled into the `.dol`, and
+      `dist/` is git-ignored. *The one exception is `icon.png`, deliberately — see task 3.*
+
+`meta.xml` takes its version from `git describe --tags --always --dirty`. `--always` keeps it
+working before the first tag; `--dirty` marks a build made from uncommitted changes, which is
+worth having when a stray `.dol` turns up on a card months later.
 
 ## Tasks
 

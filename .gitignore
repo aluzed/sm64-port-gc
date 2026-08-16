@@ -48,6 +48,9 @@
 *.n64
 *.v64
 
+# Packaging output: binaries with ROM-extracted assets compiled in
+dist/
+
 # General project-specific ignores
 __pycache__/*
 doxygen/doxygen/*

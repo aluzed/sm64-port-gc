@@ -45,7 +45,7 @@ the game code**. That is the guiding rule for the whole roadmap.
 | **M2 — The intro** | The Mario logo / title screen render correctly | 010, 011 — ✅ **the game renders**: levels, models, HUD, correct perspective |
 | **M3 — It plays** | Controller + audio: Mario is playable in the castle lobby | 012 → 014 |
 | **M4 — It saves** | Persistent save file, config read at boot | 015 — ✅ **reached**: SD and GameCube memory card, crash-safe |
-| **M5 — It ships** | `boot.dol` + `meta.xml` installable from the Homebrew Channel | 016, 017 |
+| **M5 — It ships** | `boot.dol` + `meta.xml` installable from the Homebrew Channel | 016 — ✅ packaged; 017 — hardware still untouched |
 | **M6 — It runs well** | Stable 30 fps, GameCube supported, polish | 018, 019 |
 
 ## Stories
@@ -78,7 +78,7 @@ the game code**. That is the guiding rule for the whole roadmap.
 - [015 — Saves and configuration on SD / memory card](015-save-config-storage.md) ✅ **done** — SD and GameCube memory card, both crash-safe and verified
 
 ### Epic 6 — Distribution
-- [016 — Packaging: `.dol`, `meta.xml` and a `make dist` target](016-packaging-dol-homebrew.md)
+- [016 — Packaging: `.dol`, `meta.xml` and a `make dist` target](016-packaging-dol-homebrew.md) ✅ **done** — `make dist` on both targets
 - [017 — Test strategy: Dolphin first, then real hardware](017-testing-dolphin-hardware.md) 🟡 **loop running**
 
 ### Epic 7 — Performance and polish

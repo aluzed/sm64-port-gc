@@ -753,6 +753,39 @@ DOLPHIN ?= dolphin-emu
 run: $(DOL)
 	"$(DOLPHIN)" -b -e "$(abspath $(DOL))"
 .PHONY: run
+
+# Packaging. `make TARGET_WII=1 dist` produces a folder to drop into sd:/apps/,
+# `make TARGET_GC=1 dist` a folder to copy anywhere Swiss can reach.
+#
+# dist/ is git-ignored: what it contains is a binary with ROM-extracted assets
+# compiled into it, which must not be redistributed. See docs/stories/016.
+DIST_DIR := dist
+# --always keeps this working in a repository with no tags yet, --dirty marks a
+# build made from uncommitted changes, which is exactly the build most likely to
+# end up on a memory card and be puzzled over later.
+DIST_VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo unknown)
+
+ifeq ($(TARGET_WII),1)
+DIST_APP := $(DIST_DIR)/sm64
+dist: $(DOL) packaging/wii/meta.xml.in packaging/wii/icon.png
+	@$(RM) -r $(DIST_APP)
+	@mkdir -p $(DIST_APP)
+	$(V)cp $(DOL) $(DIST_APP)/boot.dol
+	$(V)cp packaging/wii/icon.png $(DIST_APP)/icon.png
+	$(V)sed -e 's/@VERSION@/$(DIST_VERSION)/' \
+	        -e 's/@DATE@/$(shell date -u +%Y%m%d%H%M%S)/' \
+	        packaging/wii/meta.xml.in > $(DIST_APP)/meta.xml
+	@$(PRINT) "$(GREEN)Packaged $(DIST_APP) $(NO_COL)-- copy it into sd:/apps/\n"
+else
+DIST_APP := $(DIST_DIR)/sm64-gc
+dist: $(DOL) packaging/gc/README.txt
+	@$(RM) -r $(DIST_APP)
+	@mkdir -p $(DIST_APP)
+	$(V)cp $(DOL) $(DIST_APP)/sm64.dol
+	$(V)cp packaging/gc/README.txt $(DIST_APP)/README.txt
+	@$(PRINT) "$(GREEN)Packaged $(DIST_APP) $(NO_COL)-- launch sm64.dol with Swiss\n"
+endif
+.PHONY: dist
 endif
 
 clean:
