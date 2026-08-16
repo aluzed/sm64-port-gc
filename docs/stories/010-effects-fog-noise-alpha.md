@@ -82,7 +82,15 @@ Two approaches:
 Note that `gfx_pc` forces shade alpha to 1.0 when fog is active, so the vertex alpha channel
 is free to carry the factor.
 
-### 2. Texture edge (alpha compare)
+### 2. Texture edge (alpha compare) — ✅ implemented, insufficient on its own
+
+`gfx_gx_emit_tev` now sets `GX_SetAlphaCompare(GX_GREATER, 76, …)` plus
+`GX_SetZCompLoc(GX_FALSE)` for shaders carrying `opt_texture_edge`, and restores
+`GX_ALWAYS` / `GX_TRUE` otherwise.
+
+It did **not** fix the dark polygons on the intro Mario head, so those come from somewhere
+else. Do not assume this task closed that defect.
+
 
 Direct equivalent:
 ```c

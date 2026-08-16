@@ -375,7 +375,7 @@ static void gfx_gx_build_tev(struct ShaderProgram *prg, int varying_input) {
 
 static void gfx_gx_emit_tev(const struct ShaderProgram *prg) {
 #if defined(GFX_GX_DEBUG_UV) || defined(GFX_GX_DEBUG_BATCH) || defined(GFX_GX_DEBUG_DEPTH) \
-    || defined(GFX_GX_DEBUG_ZSTATE)
+    || defined(GFX_GX_DEBUG_ZSTATE) || defined(GFX_GX_DEBUG_INPUTS)
     // Flat view: one PASSCLR stage so the vertex colour reaches the screen
     // untouched. draw_triangles feeds it frac(u), frac(v), which turns texture
     // coordinates into a picture -- smooth ramps mean sane coordinates, flat
@@ -414,6 +414,22 @@ static void gfx_gx_emit_tev(const struct ShaderProgram *prg) {
         if (s->alpha_konst_one) {
             GX_SetTevKAlphaSel(st, GX_TEV_KASEL_1);
         }
+    }
+
+    // Cutout textures (grates, foliage, Mario's eyes and cap logo) rely on the
+    // alpha test, not on blending: their quads carry fully transparent texels
+    // that must be discarded, not blended. Without this every such sprite draws
+    // its whole quad, background included.
+    //
+    // GX_SetZCompLoc(GX_FALSE) moves the Z test after the alpha test. With the
+    // default order Z is written before the alpha reject, so discarded texels
+    // still occlude whatever is behind them.
+    if (prg->cc.opt_texture_edge) {
+        GX_SetAlphaCompare(GX_GREATER, 76, GX_AOP_AND, GX_ALWAYS, 0);  // 0.3 * 255
+        GX_SetZCompLoc(GX_FALSE);
+    } else {
+        GX_SetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
+        GX_SetZCompLoc(GX_TRUE);
     }
 
     GX_SetNumTevStages(prg->num_stages ? prg->num_stages : 1);
@@ -810,16 +826,25 @@ static void gfx_gx_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t bu
     // varying one goes through the rasteriser, the constants into TEV registers,
     // because GX only has two per-vertex colour channels against four inputs.
     int varying = -1;
-    for (int j = 0; j < cc->num_inputs && varying < 0; j++) {
+    int num_varying = 0;
+    for (int j = 0; j < cc->num_inputs; j++) {
         const float *ref = buf_vbo + input_off + j * input_size;
         for (size_t i = 1; i < num_verts; i++) {
             const float *cur = buf_vbo + i * stride + input_off + j * input_size;
             if (memcmp(ref, cur, input_size * sizeof(float)) != 0) {
-                varying = j;
+                if (varying < 0) {
+                    varying = j;
+                }
+                num_varying++;
                 break;
             }
         }
     }
+#ifdef GFX_GX_DEBUG_INPUTS
+    const int dbg_num_varying = num_varying;
+#else
+    (void) num_varying;
+#endif
 
     if (cur_shader->built_for_varying != varying) {
         gfx_gx_build_tev(cur_shader, varying);
@@ -892,7 +917,19 @@ static void gfx_gx_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t bu
             GX_Position3f32(v[0] * inv_w, v[1] * inv_w, -(v[2] * inv_w));
         }
 
-#if defined(GFX_GX_DEBUG_ZSTATE)
+#if defined(GFX_GX_DEBUG_INPUTS)
+        // How many combiner inputs actually vary across this batch. The backend
+        // can only route one through the rasteriser; any second one is frozen at
+        // the first vertex's value, which would show up as flat or blotchy
+        // shading.
+        //   blue = 0 varying, green = 1, yellow = 2, red = 3 or more
+        switch (dbg_num_varying) {
+            case 0:  GX_Color4u8( 40,  40, 255, 255); break;
+            case 1:  GX_Color4u8( 40, 220,  40, 255); break;
+            case 2:  GX_Color4u8(240, 240,  40, 255); break;
+            default: GX_Color4u8(255,  40,  40, 255); break;
+        }
+#elif defined(GFX_GX_DEBUG_ZSTATE)
         // Encodes the depth state gfx_pc asked for, so a surface that occludes
         // the scene can be read straight off the screen:
         //   red   = depth test enabled

@@ -163,11 +163,27 @@ make TARGET_GC=1  -j8      # -> build/us_gc/sm64.us.dol
 | Wii | ~12.85 MB | ≈ 13.5 MB | ✅ 29.97 fps, 0 exceptions, textures rendering |
 | GameCube | ~12.82 MB | ≈ 13.4 MB | ⚠️ 25.00 fps (PAL 50 Hz), 0 exceptions |
 
-**The game renders.** It boots, reaches the title screen and plays its attract-mode demo with
-level geometry, character models, textures, correct perspective and a pixel-perfect HUD.
+The game boots, reaches the title screen and plays its attract-mode demo. Level geometry,
+character models, textures and the HUD all draw, in correct perspective.
 
-Still missing before it is playable: **audio** (STORY-012), the **50 Hz cadence** fix
-(STORY-011), and the four combiner effects — fog, alpha compare, decals, noise (STORY-010).
+**But the image is not correct yet, and earlier notes in this repo overstated it.** Looked at
+full-screen rather than in thumbnails, the intro Mario head shows dark jagged polygons across
+the face where the moustache, eyebrows and sideburns belong. What is confirmed by measurement:
+
+| Checked | Verdict |
+|---|---|
+| Texture upload and swizzle | ✅ correct — Dolphin's texture dump shows crisp, correctly-coloured textures with working alpha |
+| Combiner input routing | ✅ correct — at most one input varies per batch, measured with `-DGFX_GX_DEBUG_INPUTS` |
+| Texture coordinates | ✅ correct — `-DGFX_GX_DEBUG_UV` shows clean ramps |
+| Depth ordering | 🟡 works at scene level; within the intro head the range is very compressed |
+| The dark face polygons | ❌ **unexplained** |
+
+The leading suspect is the combiner path used by those specific decals — SM64 draws the
+moustache and eyebrows from an alpha-only texture tinted by a constant colour, which is the
+`SHADER_TEXEL0A` case. That has not been isolated yet.
+
+Also still missing: **audio** (STORY-012), the **50 Hz cadence** fix (STORY-011), and the rest
+of the combiner effects — fog, decals, noise (STORY-010).
 
 Three lessons from getting here:
 
