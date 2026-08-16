@@ -928,6 +928,7 @@ static bool gfx_gx_setup_perspective(const float *buf, size_t stride, size_t nve
     size_t lo = 0, hi = 0;
     float iw_lo = 1e30f, iw_hi = -1e30f;
     size_t usable = 0;
+    bool crosses_near_plane = false;
 
     // Vertices at or behind the eye are exactly the ones the hardware path
     // exists for -- dividing them on the CPU is what produces the giant
@@ -936,6 +937,7 @@ static bool gfx_gx_setup_perspective(const float *buf, size_t stride, size_t nve
     for (size_t i = 0; i < nverts; i++) {
         const float w = buf[i * stride + 3];
         if (w <= 1e-6f) {
+            crosses_near_plane = true;
             continue;
         }
         usable++;
@@ -957,8 +959,24 @@ static bool gfx_gx_setup_perspective(const float *buf, size_t stride, size_t nve
     // depth spread is a rounding error, and the resulting garbage projection
     // wrecks the depth ordering *within* the object: the intro Mario head lost
     // its eyes and moustache to exactly that.
+    //
+    // A batch that crosses the near plane is the exception, and it is not
+    // optional. Handing it to the CPU divide means dividing by a w at or below
+    // zero: the vertex is flung across the screen and drags its triangle into a
+    // corner as a huge flat wedge. That is the defect reported from a real
+    // console when the camera turns and a polygon edge reaches the screen
+    // boundary. Such a batch takes the hardware path whatever the fit looks
+    // like, because only the GP's clipper can cut it correctly -- with a
+    // constant-depth projection if there is nothing better to fit, which keeps
+    // x and y exact and leaves only the depth approximate, on a batch whose
+    // depth barely varies anyway.
     if (iw_hi - iw_lo < 0.01f * iw_hi) {
-        return false;
+        if (!crosses_near_plane) {
+            return false;
+        }
+        gfx_gx_load_persp(1.0f - (buf[lo * stride + 2] * iw_lo)
+                          + (gx_state.zmode_decal ? GFX_GX_DECAL_BIAS : 0.0f), 0.0f);
+        return true;
     }
 
     const float zn_lo = buf[lo * stride + 2] * iw_lo;
@@ -1007,7 +1025,14 @@ static bool gfx_gx_setup_perspective(const float *buf, size_t stride, size_t nve
         const float iw = 1.0f / w;
         const float zn = buf[i * stride + 2] * iw;
         if (fabsf((p + q * iw) - zn) > tol) {
-            return false;
+            // Same exception as above: a batch crossing the near plane has to
+            // be clipped by the GP whatever its depth looks like. An imperfect
+            // depth on one batch is a sorting artefact; a CPU divide by a
+            // negative w is a wedge across a quarter of the screen.
+            if (!crosses_near_plane) {
+                return false;
+            }
+            break;
         }
     }
 
@@ -1160,7 +1185,18 @@ static void gfx_gx_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t bu
             GX_Position3f32(v[0], v[1], -v[3]);
         } else {
             const float w = v[3];
-            const float inv_w = (w != 0.0f) ? 1.0f / w : 0.0f;
+            // Collapse a vertex at or behind the eye to the centre of the near
+            // plane instead of dividing by its w. A negative w mirrors the
+            // vertex through the origin and flings it off screen, dragging its
+            // triangle into a corner as a large flat wedge -- the defect seen
+            // on hardware when the camera turns and a polygon edge reaches the
+            // screen boundary.
+            //
+            // setup_perspective now sends every batch that crosses the near
+            // plane to the GP, which clips it properly, so this is only reached
+            // when fewer than three vertices are in front of the eye and there
+            // is nothing to fit. Degenerate either way; bounded is better.
+            const float inv_w = (w > 1e-6f) ? 1.0f / w : 0.0f;
             // Depth conventions do not line up. z_is_from_0_to_1() made gfx_pc
             // give us 0 at the near plane and 1 at the far plane; GX wants -1
             // near and 0 far. Hence the -1 shift rather than a negation.

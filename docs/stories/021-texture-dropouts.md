@@ -37,16 +37,35 @@ rather than at the projection fit alone: the trigger is a polygon being cut by t
 boundary, not the camera moving as such. A corner is where a wall polygon is simultaneously
 very close, very large in screen terms, and cut on at least one side.
 
-Two candidates fit it, and they are distinguishable in one run:
+### Cause, on the second reading of the report
 
-1. **No texture is bound.** The surface would render as the white fallback, and the capture
-   does show a large flat pale wedge. `-DGFX_GX_DEBUG_TEXFAIL` turns that fallback magenta.
-2. **The texture coordinates are unusable.** A polygon that large and that close carries very
-   large `u`/`v`, and the GP's texture coordinate path is fixed point: past a certain magnitude
-   the precision collapses. Clipping generates new vertices by interpolating those coordinates,
-   which is where an already-marginal value tips over.
+Restated by the reporter: **turning the camera until a polygon edge reaches a corner of the
+screen.** That is a polygon crossing the **near plane**, and the wedge is not a texture at all
+— it is a vertex projected through a negative `w`.
 
-The first is one build away from an answer, so it goes first.
+`gfx_pc` does no near-plane clipping. A vertex behind the eye arrives with `w <= 0`, and the
+CPU divide mirrors it through the origin and flings it off screen, dragging its triangle into a
+corner as a large flat sheet. It looks like a missing texture because a triangle stretched over
+a quarter of the screen samples a handful of texels.
+
+The hardware path already handled this: feed view space and the GP clips. The hole was that a
+batch **rejected** by the projection fit fell back to the CPU divide — and the fit was made
+stricter earlier the same day, so more batches were falling through.
+
+**Fix: a batch that crosses the near plane takes the hardware path whatever its fit looks
+like.** Only the GP can cut it correctly, and the alternative is not a slightly worse image but
+a wedge across a quarter of the screen. Two cases:
+
+- the fit is good, or merely fails the residual check → use the fitted coefficients anyway;
+- there is not enough spread in `1/w` to fit at all → use a constant-depth projection, `q = 0`.
+  `x` and `y` stay exact and only depth is approximate, on a batch whose depth barely varies.
+
+An imperfect depth on one batch is a sorting artefact. A CPU divide by a negative `w` is a
+quarter of the screen.
+
+The CPU path also stops mirroring: a vertex with `w <= 0` now collapses to the centre of the
+near plane rather than being flung. Only reachable when fewer than three vertices are in front
+of the eye, where there is nothing to fit — degenerate either way, but bounded.
 
 ## The remaining lead
 
