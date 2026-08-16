@@ -1,10 +1,31 @@
 # STORY-010 — Effects: fog, noise, alpha compare, Z decals
 
 **Epic:** 2 — GX rendering
-**Status:** To do
+**Status:** To do — ⬅️ **next**, and task 0 below now blocks the whole in-game image
 **Depends on:** STORY-007, STORY-008, STORY-009
 **Estimate:** M (2-3 d)
 **Platform:** GC + Wii
+
+## Task 0 — the skybox occludes the level (blocking)
+
+Inherited from [STORY-009](009-vertex-format-draw-triangles.md), whose diagnostics located it
+precisely: level geometry is submitted correctly and then **rejected by the depth test**. A
+full-screen surface — the skybox — sits at a constant `zn` ≈ 0.33 and writes depth, while level
+geometry in a perspective projection sits at `zn` close to 1 and therefore loses `GX_LEQUAL`.
+The HUD, at `zn` = 0, is the only thing that survives on top.
+
+Reproduce in one run: `-DGFX_GX_DEBUG_BATCH` shows six large quads and nothing else; adding
+`-DGFX_GX_DEBUG_NO_DEPTH` makes the level appear.
+
+First thing to check: **which end of `[0, 1]` the GX viewport maps the near plane to.**
+`GX_SetViewport(..., 0.0f, 1.0f)` was assumed to put the near plane at 0, to match `GX_LEQUAL`.
+If it is the other way round, every depth relation in the backend is inverted, which would
+explain the observation exactly. Then `GX_SetZCompLoc`, then a call-by-call comparison against
+`gfx_opengl.c` for one skybox draw.
+
+Note that a related fix already landed: the depth mask is now gated on the depth test, because
+OpenGL writes no depth at all when `GL_DEPTH_TEST` is off while GX still honours
+`update_enable`. Necessary, but not sufficient.
 
 ## Context
 

@@ -95,15 +95,35 @@ static struct {
 } gx_state;
 
 static void gfx_gx_apply_zmode(void) {
+#ifdef GFX_GX_DEBUG_NO_DEPTH
+    // Everything draws, painter's order. Combined with -DGFX_GX_DEBUG_BATCH this
+    // separates "geometry is never submitted" from "geometry is submitted and
+    // fails the depth test".
+    GX_SetZMode(GX_FALSE, GX_ALWAYS, GX_FALSE);
+    return;
+#endif
     // A decal (Mario's shadow, footprints) must test against the surface it
     // sits on but never write depth, otherwise it fights with it.
     if (gx_state.zmode_decal) {
         GX_SetZMode(GX_TRUE, GX_LEQUAL, GX_FALSE);
-    } else {
-        GX_SetZMode(gx_state.depth_test ? GX_TRUE : GX_FALSE,
-                    GX_LEQUAL,
-                    gx_state.depth_mask ? GX_TRUE : GX_FALSE);
+        return;
     }
+
+    // The depth mask has to be gated on the test, because the two APIs disagree
+    // about what "no depth test" means. With GL_DEPTH_TEST disabled OpenGL
+    // writes nothing to the depth buffer whatever glDepthMask says; GX treats
+    // the comparison as always passing and still honours update_enable, so it
+    // *does* write.
+    //
+    // gfx_pc drives these two flags straight from the N64 render mode, and SM64
+    // draws its skybox with the test off and Z_UPD on. Taken literally on GX
+    // that fills the whole depth buffer at the near plane and every piece of
+    // level geometry drawn afterwards fails GX_LEQUAL -- the scene disappears
+    // behind the sky.
+    const bool test = gx_state.depth_test;
+    GX_SetZMode(test ? GX_TRUE : GX_FALSE,
+                GX_LEQUAL,
+                (test && gx_state.depth_mask) ? GX_TRUE : GX_FALSE);
 }
 
 static bool gfx_gx_z_is_from_0_to_1(void) {
@@ -343,8 +363,8 @@ static void gfx_gx_build_tev(struct ShaderProgram *prg, int varying_input) {
 }
 
 static void gfx_gx_emit_tev(const struct ShaderProgram *prg) {
-#ifdef GFX_GX_DEBUG_UV
-    // UV view: one PASSCLR stage so the vertex colour reaches the screen
+#if defined(GFX_GX_DEBUG_UV) || defined(GFX_GX_DEBUG_BATCH) || defined(GFX_GX_DEBUG_DEPTH)
+    // Flat view: one PASSCLR stage so the vertex colour reaches the screen
     // untouched. draw_triangles feeds it frac(u), frac(v), which turns texture
     // coordinates into a picture -- smooth ramps mean sane coordinates, flat
     // colour means they are not varying.
@@ -674,6 +694,10 @@ static void gfx_gx_load_persp(float mt22, float mt23) {
 // Returns true and sets up a perspective projection when the batch has varying
 // w and its depth fits the expected relation; false means "divide on the CPU".
 static bool gfx_gx_setup_perspective(const float *buf, size_t stride, size_t nverts) {
+#ifdef GFX_GX_DEBUG_NO_HWPERSP
+    (void) buf; (void) stride; (void) nverts;
+    return false;   // always divide on the CPU
+#endif
     if (nverts < 3) {
         return false;
     }
@@ -761,6 +785,10 @@ static void gfx_gx_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t bu
     const size_t input_off = 4 + (tex_in_buffer ? 2 : 0) + (cc->opt_fog ? 4 : 0);
     const bool has_input = cc->num_inputs > 0;
     (void) has_input;   // unused in the debug views
+#ifdef GFX_GX_DEBUG_BATCH
+    static uint32_t dbg_batch_id;
+    dbg_batch_id++;
+#endif
     const size_t input_size = cc->opt_alpha ? 4 : 3;
     const size_t num_verts = buf_vbo_num_tris * 3;
 
@@ -846,7 +874,25 @@ static void gfx_gx_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t bu
             GX_Position3f32(v[0] * inv_w, v[1] * inv_w, (v[2] * inv_w) - 1.0f);
         }
 
-#if defined(GFX_GX_DEBUG_UV)
+#if defined(GFX_GX_DEBUG_DEPTH)
+        // Greyscale depth: black at the near plane, white at the far plane.
+        // Whatever survives the depth test shows its own depth, which is how to
+        // find a surface that is occluding the scene from the wrong distance.
+        {
+            const float w = v[3];
+            const float zn = (w != 0.0f) ? (v[2] / w) : 0.0f;
+            const u8 g = float_to_u8(zn);
+            GX_Color4u8(g, g, g, 255);
+        }
+#elif defined(GFX_GX_DEBUG_BATCH)
+        // One hue per draw call. If the whole screen is a single colour, only
+        // one batch is covering it and the rest of the scene is not being
+        // submitted; many hues mean the geometry is there.
+        {
+            const uint32_t h = dbg_batch_id * 2654435761u;
+            GX_Color4u8((u8) (h >> 24) | 0x40, (u8) (h >> 16) | 0x40, (u8) (h >> 8) | 0x40, 255);
+        }
+#elif defined(GFX_GX_DEBUG_UV)
         if (tex_in_buffer) {
             const float fu = v[tex_off] - floorf(v[tex_off]);
             const float fv = v[tex_off + 1] - floorf(v[tex_off + 1]);

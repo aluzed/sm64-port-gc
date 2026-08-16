@@ -174,32 +174,62 @@ the combiner is correct (STORY-007), the textures are correct (STORY-008), the g
 correct (Mario's head renders perfectly) and now the coordinates are correct, the remaining
 defect is none of those.
 
-### Leading hypothesis for the next session
+### The defect, located
 
-The level view is a **magnified, blurry green image with large vertical structures** and a
-correct HUD on top. That is what you would see if the level geometry were not being drawn at
-all and only the **skybox** remained — a low-resolution texture stretched over the whole
-screen. It would also explain why every other diagnostic comes back clean: the parts that do
-draw are drawing correctly.
+Four diagnostics in sequence pinned it down. **The remaining defect is not in this story's
+scope at all** — it is a depth problem, not a vertex or projection one.
 
-Ways to test it, cheapest first:
+| Diagnostic | Finding |
+|---|---|
+| Per-batch false colour (`-DGFX_GX_DEBUG_BATCH`) | the whole screen is **6 large quads plus the HUD**. No level geometry. |
+| Depth test disabled (`-DGFX_GX_DEBUG_NO_DEPTH`) | the level appears: ground, horizon, objects, Mario. So it **is** submitted, and it **is** being depth-rejected. |
+| CPU divide forced (`-DGFX_GX_DEBUG_NO_HWPERSP`) | unchanged. The per-batch projection added in this story is **not** the cause; the level was already invisible before it. |
+| Depth as greyscale (`-DGFX_GX_DEBUG_DEPTH`) | the surviving surface covers the screen at a **constant `zn` ≈ 0.33**; the HUD sits at `zn` = 0. |
 
-1. Count triangles submitted per frame and compare against a scene that renders correctly. If
-   the level batches never reach `draw_triangles`, the problem is upstream in `gfx_pc` state
-   (culling, scissor, or a display-list branch), not in the backend.
-2. Disable the depth test entirely for one run. If level geometry appears, it is being rejected
-   against the skybox — a depth-range mismatch between the ortho path (2D/skybox) and the
-   perspective path (3D), the two of which must agree since they are used in the same frame.
-3. Check `GX_SetCullMode`: it is `GX_CULL_NONE`, so this is unlikely, but a whole-scene
-   disappearance is the symptom it would produce.
+So a full-screen surface — the skybox — writes depth at mid-range, and every piece of level
+geometry, which in a perspective projection sits at `zn` close to 1, loses `GX_LEQUAL` against
+it.
 
-Hypothesis 2 is the one to try first: it is the only mechanism that would make correct geometry
-invisible while everything else checks out.
+One necessary fix already landed while investigating this: **the depth mask must be gated on
+the depth test**. OpenGL writes nothing to the depth buffer when `GL_DEPTH_TEST` is disabled,
+whatever `glDepthMask` says; GX treats the comparison as always passing and still honours
+`update_enable`, so it *does* write. `gfx_pc` drives both flags straight from the N64 render
+mode, so the difference is visible immediately. That fix is correct and required — it made the
+ground start drawing — but it is not sufficient, so the skybox must be reaching us with the
+depth test *enabled*.
+
+### Where to look next
+
+The question is now narrow: **why does the skybox end up at `zn` ≈ 0.33 with depth writes,
+and how does the OpenGL backend avoid the same fate?** The two backends receive identical
+state from `gfx_pc`, so the difference has to be in how that state is interpreted.
+
+Candidates, in order:
+
+1. **The depth comparison direction.** Verify empirically which end of `[0,1]` the GX viewport
+   maps the near plane to. `GX_SetViewport(..., 0.0f, 1.0f)` was assumed to put the near plane
+   at 0, matching `GX_LEQUAL`. If it is the other way round, every depth relation is inverted
+   and this is the whole bug.
+2. **`GX_SetZCompLoc`.** Left at its default; combined with alpha compare it changes when Z is
+   written relative to the alpha reject.
+3. Compare against the OpenGL backend call by call for one skybox draw, rather than reasoning
+   about it.
+
+Candidate 1 is cheap and would explain the observation exactly, including why the HUD (at
+`zn` = 0) is the only thing that survives on top.
 
 ### Debug views available
 
 | Build flag | What it shows |
 |---|---|
-| `-DGFX_GX_DEBUG_UV` | texture coordinates as red/green, single `PASSCLR` stage |
-| `-DGFX_GX_TEXTURES_IMPLEMENTED=0` | textures bypassed; `TEXEL*` operands read as white so geometry stays readable |
+| `-DGFX_GX_DEBUG_UV` | texture coordinates as red/green |
+| `-DGFX_GX_DEBUG_BATCH` | one hue per draw call — how many batches actually cover the screen |
+| `-DGFX_GX_DEBUG_DEPTH` | `zn` as greyscale, black near, white far |
+| `-DGFX_GX_DEBUG_NO_DEPTH` | depth test and writes off; painter's order |
+| `-DGFX_GX_DEBUG_NO_HWPERSP` | always divide on the CPU |
+| `-DGFX_GX_TEXTURES_IMPLEMENTED=0` | textures bypassed; `TEXEL*` operands read as white |
 | `-DGFX_OGC_BRINGUP_DEBUG` | blue clear colour, fixed test triangle on top, per-triangle false colours |
+
+The first four all route through a single `PASSCLR` stage so the vertex colour reaches the
+screen untouched. They compose: `-DGFX_GX_DEBUG_BATCH -DGFX_GX_DEBUG_NO_DEPTH` is what
+separated "never submitted" from "submitted and rejected", in one run.
