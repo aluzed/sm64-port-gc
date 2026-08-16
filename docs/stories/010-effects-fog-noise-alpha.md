@@ -1,35 +1,45 @@
 # STORY-010 — Effects: fog, noise, alpha compare, Z decals
 
 **Epic:** 2 — GX rendering
-**Status:** To do — ⬅️ **next** (task 0 is resolved; the four effects remain)
+**Status:** 🟡 Task 0 and alpha compare done; fog, noise and Z decal validation remain — ⬅️ **next**
 **Depends on:** STORY-007, STORY-008, STORY-009
 **Estimate:** M (2-3 d)
 **Platform:** GC + Wii
 
-## Task 0 — ✅ resolved: the depth mapping was inverted
+## Task 0 — ✅ resolved: three faults stacked in the depth path
 
 Inherited from [STORY-009](009-vertex-format-draw-triangles.md) and now fixed. **The whole
-scene renders, in the right order.**
+scene renders, in the right order**, including the layered face decals that used to draw the
+white of Mario's eyes in front of his pupils.
 
-The root cause was in STORY-006: the sign of the depth mapping was decided by reasoning rather
-than measurement, and got it backwards. Measured with `-DGFX_GX_DEBUG_DEPTH`, `gfx_pc` hands
-the backend `zn = z/w` that is **~1 at the near plane and ~0 at the far plane** (bottom of
-screen 0.91, distant background 0.33). GX wants −1 near and 0 far, so the mapping is a plain
-negation `-(z/w)`, not `z/w - 1`.
+Three independent faults, each of which masked the others:
 
-An intermediate "fix" switched the comparison to `GX_GEQUAL`. It made the scene appear, but it
-was a **compensating error**: it inverted the comparison to match an inverted buffer, which
-left the sort order wrong. Both are now correct — `-(z/w)` with `GX_LEQUAL`, the canonical
-libogc setup matching the `GX_MAX_Z24` clear. `-DGFX_GX_DEBUG_ZFLIP` swaps the comparison to
-re-check the orientation in one run.
+1. **The mapping.** `gfx_pc.c` does `z = (z + w) / 2` when `z_is_from_0_to_1()` is true, which
+   maps `[-1 near, +1 far]` to `[0 near, 1 far]`. GX wants −1 near and 0 far, so the mapping is
+   the shift `z/w - 1` with `GX_LEQUAL`. It had been changed to a negation, which inverts the
+   sort order. See the correction in [STORY-006](006-gx-backend-skeleton.md): the convention is
+   in the source and should be read there, not inferred from a screenshot.
 
-A second, independent fix was needed along the way: **the depth mask has to be gated on the
-depth test.** OpenGL writes nothing to the depth buffer when `GL_DEPTH_TEST` is disabled,
-whatever `glDepthMask` says; GX treats the comparison as always passing and still honours
-`update_enable`, so it does write. `gfx_pc` drives both flags straight from the N64 render
-mode, so the difference shows up immediately.
+2. **Two conventions in one buffer.** STORY-009's per-batch hardware projection derived depth
+   independently of the CPU path. Both now come from the same relation.
 
-The decal task below can now build on a mapping that has been measured rather than assumed.
+3. **The state cache versus the EFB→XFB copy.** `gfx_ogc_copy_to_xfb()` must force
+   `GX_SetZMode(GX_TRUE, …, GX_TRUE)` and `GX_SetColorUpdate(GX_TRUE)`, or `GX_CopyDisp` will
+   not clear the EFB — and it does so behind `gfx_gx.c`'s state cache, which only emits on a
+   change. When the first draw of a frame matched what the cache already believed, nothing was
+   emitted and that draw ran with the copy's depth state. SM64's full-screen background
+   rectangle asks for no depth test; left writing at `zn = 0`, the near plane, it stamped the
+   whole buffer, and only the surfaces that draw without testing — the HUD, PRESS START — came
+   through. Whether the first draw matched varied frame to frame, so the scene and the HUD took
+   turns. `gfx_gx_start_frame` now re-emits both.
+
+Fault 3 is the general lesson: **any GX state written outside `gfx_gx.c` has to be re-emitted,
+because the state cache cannot see it.** The copy is the only such writer today.
+
+The depth mask gating survived all of this and is not a compensating change: OpenGL writes
+nothing to the depth buffer when `GL_DEPTH_TEST` is disabled whatever `glDepthMask` says, GX
+honours `update_enable` regardless, and `gfx_pc` passes both flags through from the N64 render
+mode.
 
 ## Context
 
@@ -82,15 +92,11 @@ Two approaches:
 Note that `gfx_pc` forces shade alpha to 1.0 when fog is active, so the vertex alpha channel
 is free to carry the factor.
 
-### 2. Texture edge (alpha compare) — ✅ implemented, insufficient on its own
+### 2. Texture edge (alpha compare) — ✅ implemented
 
 `gfx_gx_emit_tev` now sets `GX_SetAlphaCompare(GX_GREATER, 76, …)` plus
 `GX_SetZCompLoc(GX_FALSE)` for shaders carrying `opt_texture_edge`, and restores
 `GX_ALWAYS` / `GX_TRUE` otherwise.
-
-It did **not** fix the dark polygons on the intro Mario head, so those come from somewhere
-else. Do not assume this task closed that defect.
-
 
 Direct equivalent:
 ```c
@@ -104,45 +110,32 @@ the scenery" bug.
 Remember to restore `GX_SetAlphaCompare(GX_ALWAYS, …)` and `GX_SetZCompLoc(GX_TRUE)` when the
 option is not active, through the STORY-006 state cache.
 
-### Open defect: layered face decals lose the depth test
+### Closed: layered face decals — and how not to debug the next one
 
-**The clearest reproduction in the game is the intro Mario head: the pupil renders behind the
-white of the eye.** The eyebrows, moustache and sideburns are affected the same way.
+The intro Mario head used to draw the pupil behind the white of the eye, with the eyebrows,
+moustache and sideburns affected the same way. It is fixed by task 0 above; nothing in this
+section is outstanding.
 
-The decisive measurement: with `-DGFX_GX_DEBUG_NO_DEPTH` the face is **perfect** — eyebrows,
-sclera, blue iris, black pupil, glint, moustache, all correct. So geometry, textures, colours,
-combiner and submission order are all right, and painter's order alone produces the intended
-image. **Only the depth test is rejecting the later layers.**
+It is recorded because the *process* went badly and cost two sessions. Five hypotheses were
+raised and each dismissed by a build — the hardware projection, 16-bit Z from anti-aliasing, a
+missing `ZMODE_DEC` bias, `GX_SetZCompLoc`, an inverted comparison — and none of them was the
+cause. Depth samples were taken to five decimal places from a buffer that was being corrupted
+by two other faults at the same time, and they were treated as ground truth.
 
-Depth separation between a layer and the face beneath it, read with
-`-DGFX_GX_DEBUG_DEPTH -DGFX_GX_DEBUG_DEPTH_FINE` (which shows the low bits of `zn`, one unit
-≈ 3.8e-6):
+Three things would have shortened it:
 
-| Sample | low bits |
-|---|---|
-| left pupil / left cheek | 155 / 153 |
-| right pupil / right cheek | 123 / 113 |
-| nose | 30 |
-| eyebrow | 106 |
+- **Read conventions in the source; measure only behaviour.** The depth mapping was settled in
+  the end by three lines of `gfx_pc.c`, not by any screenshot.
+- **A measurement is only evidence once the thing measured is known to be sound.** Every depth
+  reading taken during this period described a corrupted buffer.
+- **When something used to work, bisect.** The state that rendered correctly was still in the
+  history the whole time. Correlating a timestamped screenshot against `git log` located it in
+  one command, after five builds spent hypothesising forward.
 
-So Δ`zn` ≈ 1e-5 to 4e-5 — small, but roughly 170 to 670 levels in a 24-bit buffer, far from
-the quantisation floor.
-
-Ruled out by measurement, each with one build:
-
-| Hypothesis | Result |
-|---|---|
-| The per-batch hardware projection collapses the layers | no change with `-DGFX_GX_DEBUG_NO_HWPERSP` |
-| Anti-aliasing forces a 16-bit Z buffer | no change with `aa` forced off (kept anyway: 24-bit depth is worth more here than edge AA) |
-| Missing ZMODE_DEC bias | no change with a 8e-4 NDC bias — so these layers are not flagged as decals |
-| `GX_SetZCompLoc(GX_TRUE)` lets transparent texels stamp depth | no change with it forced to `GX_FALSE` (kept anyway: it is the correct setting for layered cut-outs) |
-| Inverted comparison | `GX_GEQUAL` is worse — the background then covers everything |
-
-**Next step, and it must be a measurement rather than another hypothesis:** the samples above
-read the *topmost* surface at each pixel, so they cannot separate the pupil's own depth from
-the sclera's. Add a debug that renders only a chosen range of draw calls, isolate the eye
-layers, and read each one's depth directly. That answers whether the later layer is genuinely
-farther — and if it is, the question moves upstream to what `gfx_pc` hands us.
+Two changes made while chasing this were kept because they are correct in their own right:
+anti-aliasing forced off, for a 24-bit rather than 16-bit depth buffer, and
+`GX_SetZCompLoc(GX_FALSE)` for texture-edge shaders. Two were reverted: the `ZMODE_DEC` NDC
+bias and forcing decals onto the CPU path, neither of which these layers ever needed.
 
 ### 3. Z decal
 

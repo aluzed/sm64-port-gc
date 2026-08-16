@@ -63,9 +63,9 @@ the game code**. That is the guiding rule for the whole roadmap.
 - [006 — GX backend skeleton (`GfxRenderingAPI`)](006-gx-backend-skeleton.md) ✅ **done**
 - [007 — Translating the N64 colour combiner into TEV stages](007-colour-combiner-tev.md) ✅ **done**
 - [008 — Textures: GX swizzle, cache and wrap modes](008-gx-textures.md) ✅ **done**
-- [009 — Vertex format and triangle submission](009-vertex-format-draw-triangles.md) ✅ **done** — the remaining defect turned out to be depth, not vertices; tracked in 010
-- [010 — Effects: fog, noise, alpha compare, Z decals](010-effects-fog-noise-alpha.md)
-- [011 — Video modes, resolution, PAL/NTSC and 16:9](011-video-modes-resolution.md)
+- [009 — Vertex format and triangle submission](009-vertex-format-draw-triangles.md) ✅ **done** — hardware perspective on, near-plane clipping handled by the GP
+- [010 — Effects: fog, noise, alpha compare, Z decals](010-effects-fog-noise-alpha.md) 🟡 depth and alpha compare done; fog, noise, decal validation remain
+- [011 — Video modes, resolution, PAL/NTSC and 16:9](011-video-modes-resolution.md) 🟡 50 Hz cadence done; mode selection, 16:9, overscan remain
 
 ### Epic 3 — Audio
 - [012 — 32 kHz stereo audio backend (AI DMA)](012-audio-backend-ai-dma.md) ✅ **done**
@@ -180,7 +180,8 @@ What has been established by measurement rather than argument:
 | Texture coordinates | ✅ correct (`-DGFX_GX_DEBUG_UV`) |
 | Combiner alpha output | ✅ correct — opaque geometry at 1.0, sparkle cutouts show their shape (`-DGFX_GX_DEBUG_ALPHA`) |
 | Combiner translation case | ✅ no surface uses the two-stage general form or `SHADER_TEXEL0A` (`-DGFX_GX_DEBUG_CC`) |
-| Per-batch projection fit | ❌ **was wrong** — see below |
+| Per-batch projection fit | ✅ correct — thresholds relative, coefficients derived from the CPU path |
+| Depth axis and sort order | ✅ correct — `z/w - 1` with `GX_LEQUAL` |
 
 The jagged face was the perspective fit from STORY-009. Its two thresholds were absolute where
 they had to be relative: a batch qualified for the hardware path on a spread in `1/w` of
@@ -199,19 +200,38 @@ showed the background with no Mario head. See [STORY-004](004-video-window-manag
 — including the method lesson, since single screenshots cannot show a flicker and several
 earlier conclusions in this repo were distorted by it.
 
-Still missing: the **50 Hz cadence** fix (STORY-011), and the rest of the combiner effects —
-fog, decals, noise (STORY-010).
+The depth path is now correct as well, after three faults that had stacked on top of each
+other: the mapping (`z/w - 1`, not a negation — it is three lines of `gfx_pc.c`, see
+[STORY-006](006-gx-backend-skeleton.md)), two conventions writing the same buffer because the
+per-batch projection derived depth independently of the CPU path
+([STORY-009](009-vertex-format-draw-triangles.md)), and the EFB→XFB copy moving GX state
+behind `gfx_gx.c`'s state cache ([STORY-010](010-effects-fog-noise-alpha.md)). The last one
+made the 3D scene and the HUD take turns, frame by frame.
 
-Three lessons from getting here:
+Still missing: the rest of the combiner effects — fog, noise, Z decal validation (STORY-010) —
+and mode selection, 16:9 and overscan (STORY-011). One known rendering defect remains: the
+water surface flickers out for an instant during the attract demo.
+
+Lessons from getting here:
 
 1. **Frame pacing is a trap.** `VIDEO_WaitVSync()` paces the loop on the *retrace*, not on
    the game's frame rate. Left uncorrected, SM64 ran at 59.94 fps — double speed. Fixed by
    waiting two retraces per frame ([STORY-004](004-video-window-manager-backend.md)).
 2. **The PAL 50 Hz problem is real and measured**, not theoretical: 25 fps instead of 30,
-   i.e. 17 % too slow, music and physics included. That is a correctness bug, handled by
-   [STORY-011](011-video-modes-resolution.md).
+   i.e. 17 % too slow, music and physics included. That is a correctness bug, fixed by pacing
+   50 Hz modes on the clock ([STORY-011](011-video-modes-resolution.md)).
 3. **Depth conventions do not line up.** GX wants −1 near / 0 far where `gfx_pc` gives
    0 near / 1 far ([STORY-006](006-gx-backend-skeleton.md)).
+4. **Read conventions in the source; measure only behaviour.** The depth axis was reversed for
+   two sessions on the strength of a screenshot, when the answer was three lines of
+   `gfx_pc.c`. A measurement is evidence only once the thing being measured is known to be
+   sound — and that buffer was being corrupted by two other faults at the time.
+5. **When something used to work, bisect before hypothesising.** The good state was in the
+   history the whole time; correlating a timestamped screenshot against `git log` found it in
+   one command, after five builds spent guessing forward.
+6. **The GX state cache cannot see writes made outside `gfx_gx.c`.** Anything that touches GX
+   state elsewhere — today only the EFB→XFB copy — has to be re-emitted at the top of the
+   next frame.
 
 Section sizes and the GameCube verdict: [STORY-005](005-memory-mem1-mem2.md).
 Dolphin test rig: [STORY-017](017-testing-dolphin-hardware.md).

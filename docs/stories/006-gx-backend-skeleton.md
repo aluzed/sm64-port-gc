@@ -124,10 +124,10 @@ Decisions taken along the way that differ from the plan above:
    full-screen black rectangle SM64 paints as its background. It now draws in `end_frame`, on
    top of everything. That cost several cycles of believing the pipeline drew nothing.
 
-2. ~~**Inverted depth convention.**~~ **This entry was wrong — see the correction below.**
-   It claimed that with `z_is_from_0_to_1()` returning `true`, `gfx_pc` supplies `z/w` with 0
-   at the near plane, so the conversion had to be `z/w - 1` rather than `-(z/w)`. The
-   reasoning was plausible and never measured, and it is the opposite of the truth.
+2. **Depth convention.** With `z_is_from_0_to_1()` returning `true`, `gfx_pc` supplies `z/w`
+   that is 0 at the near plane, so the conversion is `z/w - 1` rather than `-(z/w)`. This
+   entry was marked wrong for a while on the strength of a measurement; the measurement was
+   of a corrupted buffer and the entry was right all along. See the correction below.
 
 3. **`guMtxIdentity()` on a `Mtx44`.** `Mtx` is `f32[3][4]`, `Mtx44` is `f32[4][4]` — both
    decay to `f32(*)[4]`, so **the compiler says nothing**, and the fourth row is left
@@ -148,28 +148,36 @@ Three aids, each of which paid for itself:
 The third one confirmed the game really does submit geometry: the Mario head mesh from the
 intro is clearly recognisable, one hue per triangle.
 
-### Correction: the depth convention, measured
+### Correction: the depth convention, settled from the source
 
-Bug 2 above was diagnosed by reasoning and got it backwards, which cost most of two later
-sessions. **Measured** with `-DGFX_GX_DEBUG_DEPTH`, which paints `zn = z/w` as greyscale:
+Bug 2 above was reversed once, on the strength of a `-DGFX_GX_DEBUG_DEPTH` reading that put
+the bottom of the screen at `zn ≈ 0.91` and the distant background at `≈ 0.33`, and was
+therefore read as "`zn` is ~1 near, ~0 far". The mapping was changed to a negation, `-(z/w)`.
 
-| Screen region | What it is | `zn` |
-|---|---|---|
-| bottom | floor, near the camera | **≈ 0.91** |
-| top | background, far away | **≈ 0.33** |
+**That was wrong, and it cost two sessions.** The reading was taken while the depth buffer
+held two different conventions at once — the CPU divide path and the per-batch hardware
+projection of [STORY-009](009-vertex-format-draw-triangles.md) disagreed — so it described a
+corrupted buffer, not the convention. Negating inverts the sort order; its visible signature
+was the white of Mario's eyes drawing in front of his pupils and Bowser showing through the
+floor.
 
-So `gfx_pc` hands us `zn` that is **~1 at the near plane and ~0 at the far plane**. GX wants
-−1 near and 0 far, so the mapping is a plain negation, `-(z/w)` — which is what the code did
-before the "fix".
+The convention is not a matter of measurement at all. It is three lines of `gfx_pc.c`:
 
-The inversion made the whole depth buffer run backwards. Its symptom was the entire scene
-disappearing behind the sky, and switching the comparison to `GX_GEQUAL` hid that while
-leaving the sort order wrong — a compensating error, not a fix. The code is now
-`-(z/w)` with `GX_LEQUAL`, the canonical libogc setup, matching the `GX_MAX_Z24` clear.
+```c
+bool z_is_from_0_to_1 = gfx_rapi->z_is_from_0_to_1();
+float z = v_arr[i]->z, w = v_arr[i]->w;
+if (z_is_from_0_to_1) { z = (z + w) / 2.0f; }
+```
 
-The lesson is the same one as below, applied to a different subject: **a convention that can
-be measured in one build should never be argued about.** The comment in `gfx_gx.c` now states
-how to re-verify it in one run.
+That maps the OpenGL range `[-1 near, +1 far]` onto `[0 near, 1 far]`. So **`zn = 0` at the
+near plane and `1` at the far plane**, GX wants −1 near and 0 far, and the mapping is the
+shift `z/w - 1` with `GX_LEQUAL` — the canonical libogc setup, matching the `GX_MAX_Z24`
+clear. `-(z/w)` is exactly backwards.
+
+The method lesson is the opposite of the one first drawn here, and it is the more useful one:
+**a convention that is written down in the source should be read, not measured.** A
+measurement can only be trusted once you know the thing being measured is not itself broken —
+and here it was. Measure behaviour; read conventions.
 
 ### Method lesson
 

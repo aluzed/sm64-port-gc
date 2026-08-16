@@ -1,7 +1,7 @@
 # STORY-009 — Vertex format and triangle submission
 
 **Epic:** 2 — GX rendering
-**Status:** 🟡 Per-batch projection implemented; level rendering still wrong, cause narrowed down
+**Status:** ✅ Done — the scene renders and sorts correctly; one known defect left (water)
 **Depends on:** STORY-006, STORY-007
 **Estimate:** M (2-4 d)
 **Platform:** GC + Wii
@@ -198,19 +198,40 @@ mode, so the difference is visible immediately. That fix is correct and required
 ground start drawing — but it is not sufficient, so the skybox must be reaching us with the
 depth test *enabled*.
 
-### Outcome: the depth *mapping* was inverted, back in STORY-006
+### Outcome: two depth conventions in one buffer
 
-Not the comparison — the sign of the depth we emit. `gfx_pc` hands us `zn = z/w` that is ~1 at
-the near plane and ~0 at the far plane (measured: floor near the camera 0.91, distant
-background 0.33), so the mapping to GX's −1-near/0-far range is a plain negation. STORY-006
-had reasoned it the other way round and written `z/w - 1`.
+The conclusion first written here — that STORY-006's `z/w - 1` was an inverted mapping and had
+to become `-(z/w)` — **was wrong**, and it sent the next two sessions chasing ghosts. The
+correct mapping is `z/w - 1`, and it is derivable in three lines of `gfx_pc.c`; see the
+correction in [STORY-006](006-gx-backend-skeleton.md).
 
-An intermediate attempt switched the comparison to `GX_GEQUAL`, which made the scene appear
-but only by inverting the comparison to match an inverted buffer — the sort order stayed
-wrong. Both are fixed now: `-(z/w)` with `GX_LEQUAL`.
+The real fault was introduced by this story. The per-batch hardware projection derived depth
+from fitted coefficients on a convention the CPU path did not share, so batches sorted against
+each other in the same buffer. Every reading taken afterwards described a corrupted buffer,
+and every "fix" that followed — flipping the comparison to `GX_GEQUAL`, renegotiating the
+mapping to a negation — compensated for the split instead of closing it. The visible signature
+was the white of Mario's eyes drawing in front of his pupils, and Bowser through the floor.
 
-The perspective work in this story is validated by the same screenshot: the floor tiles
-converge correctly, which is exactly what affine interpolation could not do.
+Both paths now derive from one place. For `z_ndc = zn - 1` with `zn = p + q/w`, GX's
+`z_ndc = -mt22 + mt23/w` gives `mt22 = 1 - p` and `mt23 = q`. **Whenever this projection is
+touched, re-derive the pair from what the CPU path in `draw_triangles` writes — never reason
+them out independently.** `-DGFX_GX_HW_PERSP=0` falls back to a CPU divide everywhere and is
+the first thing to try if depth ordering ever looks inconsistent *between* objects.
+
+The hardware path is not optional, and not only for perspective-correct texturing: `gfx_pc`
+does no near-plane clipping. `gfx_sp_tri1` rejects a triangle only when all three vertices
+share a rejection bit, so one straddling the near plane arrives with `w <= 0` on some
+vertices. A CPU divide turns that into nonsense positions and a nonsense depth, which stamps
+the buffer and makes everything drawn afterwards lose the test — floors dropping out and the
+background coming through, briefly, while the camera moves. Feeding view space hands the
+problem to the GP's clipper, which is what it is for.
+
+The remaining known defect is the water surface flickering out for an instant during the
+attract demo. A large near-flat quad is the ill-conditioned case for the per-batch fit: when
+the camera passes level with the surface the spread in `1/w` collapses, and the fit is either
+rejected (falling back to the CPU divide, with the near-plane problem above) or accepted with
+a residual that pushes the quad outside `[-1, 0]`, where GX clips it away. Start at the
+conditioning threshold in `gfx_gx_setup_perspective`.
 
 ### Debug views available
 
@@ -221,6 +242,7 @@ converge correctly, which is exactly what affine interpolation could not do.
 | `-DGFX_GX_DEBUG_DEPTH` | `zn` as greyscale, black near, white far |
 | `-DGFX_GX_DEBUG_NO_DEPTH` | depth test and writes off; painter's order |
 | `-DGFX_GX_DEBUG_NO_HWPERSP` | always divide on the CPU |
+| `-DGFX_GX_HW_PERSP=0` | same, but compiles the hardware path out entirely — the first A/B to run if depth ordering looks inconsistent between objects |
 | `-DGFX_GX_TEXTURES_IMPLEMENTED=0` | textures bypassed; `TEXEL*` operands read as white |
 | `-DGFX_OGC_BRINGUP_DEBUG` | blue clear colour, fixed test triangle on top, per-triangle false colours |
 
