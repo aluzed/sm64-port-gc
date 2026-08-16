@@ -1,20 +1,16 @@
 # STORY-009 — Vertex format and triangle submission
 
 **Epic:** 2 — GX rendering
-**Status:** 🟡 Base path landed with STORY-006; the projection trade-off is still open
+**Status:** 🟡 Per-batch projection implemented; level rendering still wrong, cause narrowed down
 **Depends on:** STORY-006, STORY-007
 **Estimate:** M (2-4 d)
 **Platform:** GC + Wii
 
-> **Current state**: `gfx_gx_draw_triangles` decodes `buf_vbo`, submits in `GX_DIRECT`, and
-> does the **perspective divide on the CPU** with an identity orthographic projection —
-> option (A) of task 2. The depth conversion is `z/w - 1` (see STORY-006: the naive negation
-> swaps near and far).
->
-> **The predicted problem is confirmed** (STORY-008): with textures enabled, the 2D HUD is
-> perfect while textured 3D surfaces are smeared. The only difference between them is `w`,
-> constant in 2D and varying in 3D — the signature of affine interpolation. See "The trap in
-> option (B)" below: the obvious remedy does not work as is.
+> **Current state**: the projection is now chosen **per batch** — hardware divide when the
+> batch has real perspective, CPU divide otherwise. Implemented and building, but it did
+> **not** fix the level rendering, which means affine interpolation was not the cause. See the
+> implementation log at the bottom: the investigation narrowed things down considerably and
+> ends on a specific, testable hypothesis.
 
 ## Context
 
@@ -133,3 +129,77 @@ Avenues to investigate, in order of preference:
   mismatch hangs the GP — symptom: a frozen image with no error message.
 - Check face winding (`GX_SetCullMode`) once geometry is visible: if the inside of objects
   shows instead of the outside, that is inverted winding, not a depth bug.
+
+## Implementation log
+
+### The projection, solved without guessing near/far
+
+Option (B) needs `mt22` and `mt23`, which depend on a near/far pair `gfx_pc` never exposes.
+Picking fixed values would clip either near geometry or the 2D layer.
+
+They do not have to be guessed. For a standard perspective projection `z/w` is an **affine
+function of `1/w`**, and GX gives `z_ndc = -mt22 + mt23/w` — the same shape. So the relation is
+recovered from the batch itself: two vertices give the two coefficients, and `mt22`/`mt23`
+follow. Depth then comes out **identical to the CPU path**, with no near/far constant anywhere
+and no risk of clipping something the game considered visible. A third vertex validates the
+fit; if it does not hold, the code falls back to the CPU divide rather than render nonsense.
+
+`gfx_gx_setup_perspective()` does this per batch; `gfx_gx_load_ortho()` / `gfx_gx_load_persp()`
+cache the loaded matrix so switching costs nothing when the mode does not change.
+
+### A real bug found on the way
+
+The first version of the guard bailed out (`return false`) as soon as any vertex had `w <= 0`.
+That is backwards: **those are exactly the batches the hardware path exists for.** `gfx_pc`
+does not clip triangles straddling the near plane — it relies on the GPU to clip in homogeneous
+space — so dividing them on the CPU turns a vertex behind the eye into a wild projected
+position, i.e. giant stray triangles. Vertices with `w <= 0` are now skipped when fitting the
+coefficients but no longer disqualify the batch.
+
+Worth fixing on its own merits; it did not change the visible symptom.
+
+### What the investigation ruled out
+
+The working hypothesis was affine interpolation. It is wrong, and three diagnostics say so:
+
+| Diagnostic | Result |
+|---|---|
+| Per-batch hardware perspective | image unchanged |
+| Near-plane clipping fix | image unchanged |
+| **UV view** (`-DGFX_GX_DEBUG_UV`) | **texture coordinates are clean** — smooth ramps across Mario's head and across the background quads |
+
+The UV view is the decisive one: it renders `frac(u)`, `frac(v)` as red/green through a single
+`PASSCLR` stage, so what reaches the screen is the coordinates themselves. They are sane. Since
+the combiner is correct (STORY-007), the textures are correct (STORY-008), the geometry is
+correct (Mario's head renders perfectly) and now the coordinates are correct, the remaining
+defect is none of those.
+
+### Leading hypothesis for the next session
+
+The level view is a **magnified, blurry green image with large vertical structures** and a
+correct HUD on top. That is what you would see if the level geometry were not being drawn at
+all and only the **skybox** remained — a low-resolution texture stretched over the whole
+screen. It would also explain why every other diagnostic comes back clean: the parts that do
+draw are drawing correctly.
+
+Ways to test it, cheapest first:
+
+1. Count triangles submitted per frame and compare against a scene that renders correctly. If
+   the level batches never reach `draw_triangles`, the problem is upstream in `gfx_pc` state
+   (culling, scissor, or a display-list branch), not in the backend.
+2. Disable the depth test entirely for one run. If level geometry appears, it is being rejected
+   against the skybox — a depth-range mismatch between the ortho path (2D/skybox) and the
+   perspective path (3D), the two of which must agree since they are used in the same frame.
+3. Check `GX_SetCullMode`: it is `GX_CULL_NONE`, so this is unlikely, but a whole-scene
+   disappearance is the symptom it would produce.
+
+Hypothesis 2 is the one to try first: it is the only mechanism that would make correct geometry
+invisible while everything else checks out.
+
+### Debug views available
+
+| Build flag | What it shows |
+|---|---|
+| `-DGFX_GX_DEBUG_UV` | texture coordinates as red/green, single `PASSCLR` stage |
+| `-DGFX_GX_TEXTURES_IMPLEMENTED=0` | textures bypassed; `TEXEL*` operands read as white so geometry stays readable |
+| `-DGFX_OGC_BRINGUP_DEBUG` | blue clear colour, fixed test triangle on top, per-triangle false colours |

@@ -63,7 +63,7 @@ the game code**. That is the guiding rule for the whole roadmap.
 - [006 — GX backend skeleton (`GfxRenderingAPI`)](006-gx-backend-skeleton.md) ✅ **done**
 - [007 — Translating the N64 colour combiner into TEV stages](007-colour-combiner-tev.md) ✅ **done**
 - [008 — Textures: GX swizzle, cache and wrap modes](008-gx-textures.md) ✅ **done**
-- [009 — Vertex format and triangle submission](009-vertex-format-draw-triangles.md) ⬅️ **next** — perspective correction is now the only blocker for a correct in-game image
+- [009 — Vertex format and triangle submission](009-vertex-format-draw-triangles.md) 🟡 **per-batch projection landed**; level geometry still missing, see the log for the leading hypothesis
 - [010 — Effects: fog, noise, alpha compare, Z decals](010-effects-fog-noise-alpha.md)
 - [011 — Video modes, resolution, PAL/NTSC and 16:9](011-video-modes-resolution.md)
 

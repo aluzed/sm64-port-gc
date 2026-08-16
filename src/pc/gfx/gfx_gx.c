@@ -21,6 +21,7 @@
 #include <ogc/cache.h>
 
 #include <malloc.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -42,7 +43,9 @@
 // when something stops drawing: sampling a texture that was never uploaded
 // renders every textured surface black, which in SM64 covers most of the screen
 // and looks exactly like "nothing draws at all".
+#ifndef GFX_GX_TEXTURES_IMPLEMENTED
 #define GFX_GX_TEXTURES_IMPLEMENTED 1
+#endif
 
 // Worst case is: one stage to stash texel1, two for the general colour form,
 // and the alpha form padded to match. Eight leaves room for STORY-010.
@@ -154,6 +157,13 @@ static u8 gfx_gx_tev_reg_id(int reg) {
 
 // SHADER_* operand -> GX colour input.
 static u8 gfx_gx_item_to_colour(const struct ShaderProgram *prg, uint8_t item) {
+#if !GFX_GX_TEXTURES_IMPLEMENTED
+    // Diagnostic build: no texture is ever loaded, so sampling would return
+    // black over most of the screen. Neutral white keeps the geometry readable.
+    if (item == SHADER_TEXEL0 || item == SHADER_TEXEL0A || item == SHADER_TEXEL1) {
+        return GX_CC_ONE;
+    }
+#endif
     switch (item) {
         case SHADER_0:       return GX_CC_ZERO;
         case SHADER_TEXEL0:  return GX_CC_TEXC;
@@ -303,7 +313,9 @@ static void gfx_gx_build_tev(struct ShaderProgram *prg, int varying_input) {
             s->col_clamp = GX_TRUE;
         }
 
-        if (!cc->opt_alpha) {
+        // In the no-texture diagnostic build the alpha chain would read a
+        // texture that does not exist; pin it to 1.0 like the no-alpha case.
+        if (!cc->opt_alpha || !GFX_GX_TEXTURES_IMPLEMENTED) {
             // The GLSL backend emits alpha = 1.0 when the combiner has no alpha
             // channel. GX alpha inputs have no ONE, so borrow KONST, whose
             // selector can be pinned to 1.0.
@@ -331,6 +343,18 @@ static void gfx_gx_build_tev(struct ShaderProgram *prg, int varying_input) {
 }
 
 static void gfx_gx_emit_tev(const struct ShaderProgram *prg) {
+#ifdef GFX_GX_DEBUG_UV
+    // UV view: one PASSCLR stage so the vertex colour reaches the screen
+    // untouched. draw_triangles feeds it frac(u), frac(v), which turns texture
+    // coordinates into a picture -- smooth ramps mean sane coordinates, flat
+    // colour means they are not varying.
+    (void) prg;
+    GX_SetNumTexGens(0);
+    GX_SetTevOrder(GX_TEVSTAGE0, GX_TEXCOORDNULL, GX_TEXMAP_NULL, GX_COLOR0A0);
+    GX_SetTevOp(GX_TEVSTAGE0, GX_PASSCLR);
+    GX_SetNumTevStages(1);
+    return;
+#else
     const bool use_tex = (prg->cc.used_textures[0] || prg->cc.used_textures[1])
                          && GFX_GX_TEXTURES_IMPLEMENTED;
 
@@ -361,6 +385,7 @@ static void gfx_gx_emit_tev(const struct ShaderProgram *prg) {
     }
 
     GX_SetNumTevStages(prg->num_stages ? prg->num_stages : 1);
+#endif
 }
 
 static void gfx_gx_load_shader(struct ShaderProgram *new_prg) {
@@ -588,6 +613,129 @@ static void gfx_gx_set_use_alpha(bool use_alpha) {
 
 // -- geometry ----------------------------------------------------------------
 
+// -- projection --------------------------------------------------------------
+//
+// gfx_pc hands us clip space, so the only question is who performs the
+// perspective divide.
+//
+// Doing it on the CPU and feeding an orthographic projection is simple and gets
+// depth exactly right, but it leaves GX interpolating texture coordinates
+// affinely: w is then constant as far as the hardware is concerned. That is
+// invisible on 2D elements and very visible on large floor triangles.
+//
+// Letting GX do the divide fixes the interpolation, but its perspective
+// projection matrix has its last row pinned to (0, 0, -1, 0), so
+// w_clip = -z_view and z_ndc = -mt22 + mt23/w depends on w alone. There is no
+// way to carry both the game's w and its depth.
+//
+// The way out is that they are not independent: for a standard perspective
+// projection z/w is an affine function of 1/w. So we recover that relation from
+// the batch itself -- two vertices give the two coefficients -- and fold it into
+// mt22/mt23. Depth then matches the CPU path exactly, with no near/far guesswork
+// and no risk of clipping geometry the game considered visible.
+//
+// A third vertex checks the fit. If it does not hold (a projection that is not a
+// standard perspective), we fall back to the CPU divide rather than render
+// nonsense.
+
+enum ProjMode { PROJ_NONE, PROJ_ORTHO, PROJ_PERSP };
+
+static enum ProjMode cur_proj_mode;
+static float cur_proj_mt22, cur_proj_mt23;
+
+static void gfx_gx_load_ortho(void) {
+    if (cur_proj_mode == PROJ_ORTHO) {
+        return;
+    }
+    Mtx44 proj;
+    memset(proj, 0, sizeof(proj));
+    proj[0][0] = proj[1][1] = proj[2][2] = proj[3][3] = 1.0f;
+    GX_LoadProjectionMtx(proj, GX_ORTHOGRAPHIC);
+    cur_proj_mode = PROJ_ORTHO;
+}
+
+static void gfx_gx_load_persp(float mt22, float mt23) {
+    if (cur_proj_mode == PROJ_PERSP && mt22 == cur_proj_mt22 && mt23 == cur_proj_mt23) {
+        return;
+    }
+    Mtx44 proj;
+    memset(proj, 0, sizeof(proj));
+    proj[0][0] = 1.0f;   // x_clip = x_view
+    proj[1][1] = 1.0f;   // y_clip = y_view
+    proj[2][2] = mt22;
+    proj[2][3] = mt23;
+    proj[3][2] = -1.0f;  // w_clip = -z_view
+    GX_LoadProjectionMtx(proj, GX_PERSPECTIVE);
+    cur_proj_mode = PROJ_PERSP;
+    cur_proj_mt22 = mt22;
+    cur_proj_mt23 = mt23;
+}
+
+// Returns true and sets up a perspective projection when the batch has varying
+// w and its depth fits the expected relation; false means "divide on the CPU".
+static bool gfx_gx_setup_perspective(const float *buf, size_t stride, size_t nverts) {
+    if (nverts < 3) {
+        return false;
+    }
+
+    size_t lo = 0, hi = 0;
+    float iw_lo = 1e30f, iw_hi = -1e30f;
+    size_t usable = 0;
+
+    // Vertices at or behind the eye are exactly the ones the hardware path
+    // exists for -- dividing them on the CPU is what produces the giant
+    // triangles. They cannot contribute to the fit, but their presence must not
+    // disqualify the batch.
+    for (size_t i = 0; i < nverts; i++) {
+        const float w = buf[i * stride + 3];
+        if (w <= 1e-6f) {
+            continue;
+        }
+        usable++;
+        const float iw = 1.0f / w;
+        if (iw < iw_lo) { iw_lo = iw; lo = i; }
+        if (iw > iw_hi) { iw_hi = iw; hi = i; }
+    }
+
+    if (usable < 3) {
+        return false;
+    }
+
+    // All the same depth: a 2D batch. Perspective would be a no-op at best and
+    // ill-conditioned at worst.
+    if (iw_hi - iw_lo < 1e-9f) {
+        return false;
+    }
+
+    const float zn_lo = buf[lo * stride + 2] * iw_lo;
+    const float zn_hi = buf[hi * stride + 2] * iw_hi;
+
+    const float q = (zn_hi - zn_lo) / (iw_hi - iw_lo);
+    const float p = zn_lo - q * iw_lo;
+
+    // Validate on the vertex furthest from both anchors.
+    size_t mid = lo;
+    float best = -1.0f;
+    for (size_t i = 0; i < nverts; i++) {
+        const float w = buf[i * stride + 3];
+        if (w <= 1e-6f) {
+            continue;
+        }
+        const float iw = 1.0f / w;
+        const float d = fminf(fabsf(iw - iw_lo), fabsf(iw - iw_hi));
+        if (d > best) { best = d; mid = i; }
+    }
+    const float iw_m = 1.0f / buf[mid * stride + 3];
+    const float zn_m = buf[mid * stride + 2] * iw_m;
+    if (fabsf((p + q * iw_m) - zn_m) > 1e-3f) {
+        return false;
+    }
+
+    // z_ndc must come out as zn - 1, the same value the CPU path writes.
+    gfx_gx_load_persp(1.0f - p, q);
+    return true;
+}
+
 static u8 float_to_u8(float v) {
     int i = (int) (v * 255.0f + 0.5f);
     if (i < 0) return 0;
@@ -612,6 +760,7 @@ static void gfx_gx_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t bu
     const size_t tex_off = 4;
     const size_t input_off = 4 + (tex_in_buffer ? 2 : 0) + (cc->opt_fog ? 4 : 0);
     const bool has_input = cc->num_inputs > 0;
+    (void) has_input;   // unused in the debug views
     const size_t input_size = cc->opt_alpha ? 4 : 3;
     const size_t num_verts = buf_vbo_num_tris * 3;
 
@@ -671,24 +820,41 @@ static void gfx_gx_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t bu
         }
     }
 
+    // Hardware divide when the batch has real perspective, CPU divide otherwise.
+    const bool hw_persp = gfx_gx_setup_perspective(buf_vbo, stride, num_verts);
+    if (!hw_persp) {
+        gfx_gx_load_ortho();
+    }
+
     GX_Begin(GX_TRIANGLES, GX_VTXFMT0, (u16) (buf_vbo_num_tris * 3));
     for (size_t i = 0; i < buf_vbo_num_tris * 3; i++) {
         const float *v = buf_vbo + i * stride;
 
-        // gfx_pc hands us clip space; the perspective divide happens here for
-        // now, with an identity orthographic projection downstream. That makes
-        // interpolation affine, which is invisible while nothing is textured
-        // but will have to be revisited in STORY-009.
-        const float w = v[3];
-        const float inv_w = (w != 0.0f) ? 1.0f / w : 0.0f;
-        // Depth conventions do not line up. z_is_from_0_to_1() made gfx_pc give
-        // us 0 at the near plane and 1 at the far plane; GX wants -1 near and 0
-        // far. Hence the -1 shift rather than a negation: negating maps near to
-        // far and lets the background win every depth test, which shows up as a
-        // uniform full-screen fill.
-        GX_Position3f32(v[0] * inv_w, v[1] * inv_w, (v[2] * inv_w) - 1.0f);
+        if (hw_persp) {
+            // Feed view space: the projection turns z_view = -w back into
+            // w_clip = w, so the GP divides and interpolates texture
+            // coordinates with perspective correction.
+            GX_Position3f32(v[0], v[1], -v[3]);
+        } else {
+            const float w = v[3];
+            const float inv_w = (w != 0.0f) ? 1.0f / w : 0.0f;
+            // Depth conventions do not line up. z_is_from_0_to_1() made gfx_pc
+            // give us 0 at the near plane and 1 at the far plane; GX wants -1
+            // near and 0 far. Hence the -1 shift rather than a negation:
+            // negating maps near to far and lets the background win every depth
+            // test, which shows up as a uniform full-screen fill.
+            GX_Position3f32(v[0] * inv_w, v[1] * inv_w, (v[2] * inv_w) - 1.0f);
+        }
 
-#ifdef GFX_OGC_BRINGUP_DEBUG
+#if defined(GFX_GX_DEBUG_UV)
+        if (tex_in_buffer) {
+            const float fu = v[tex_off] - floorf(v[tex_off]);
+            const float fv = v[tex_off + 1] - floorf(v[tex_off + 1]);
+            GX_Color4u8(float_to_u8(fu), float_to_u8(fv), 0, 255);
+        } else {
+            GX_Color4u8(0, 0, 255, 255);   // untextured geometry shows blue
+        }
+#elif defined(GFX_OGC_BRINGUP_DEBUG)
         // False colour, one hue per triangle. Until textures exist every
         // surface comes out white, which hides whether real geometry is being
         // submitted at all; this makes the shapes obvious.
@@ -716,21 +882,18 @@ static void gfx_gx_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t bu
 // -- lifecycle ---------------------------------------------------------------
 
 static void gfx_gx_init(void) {
-    Mtx44 proj;
     Mtx identity;
 
     // gfx_pc already transformed everything, so the GX transform unit is set to
-    // identity and does nothing but the (currently trivial) projection.
+    // identity and does nothing but the projection.
     guMtxIdentity(identity);
     GX_LoadPosMtxImm(identity, GX_PNMTX0);
     GX_SetCurrentMtx(GX_PNMTX0);
 
-    // Not guMtxIdentity(): that takes a Mtx (3x4) and would leave the fourth
-    // row of a Mtx44 uninitialised. Both types decay to f32(*)[4], so the
-    // compiler says nothing about the mismatch.
-    memset(proj, 0, sizeof(proj));
-    proj[0][0] = proj[1][1] = proj[2][2] = proj[3][3] = 1.0f;
-    GX_LoadProjectionMtx(proj, GX_ORTHOGRAPHIC);
+    // The projection is chosen per batch from here on (see the block above
+    // gfx_gx_setup_perspective); start from the orthographic one.
+    cur_proj_mode = PROJ_NONE;
+    gfx_gx_load_ortho();
 
     // No hardware lighting: gfx_pc has applied the N64 lighting model on the
     // CPU, so the vertex colour must reach the TEV untouched.
