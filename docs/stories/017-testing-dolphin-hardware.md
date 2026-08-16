@@ -64,6 +64,11 @@ Worth noting what did *not* need debugging: the two integer stores immediately b
 faulting one are equally unaligned and went through untouched. Reading the disassembly rather
 than guessing from the symbol name is what made that obvious.
 
+### Third run: fixed
+
+With the allocator aligned, the castle loads and the first level is playable, audio included.
+A real GameCube now runs this port past the point where it used to die.
+
 Still unverified on hardware: a long session for audio drift, the memory card save surviving a
 power cycle, 50/60 Hz switching, and overscan on a CRT.
 

@@ -46,7 +46,7 @@ the game code**. That is the guiding rule for the whole roadmap.
 | **M3 — It plays** | Controller + audio: Mario is playable in the castle lobby | 012, 013 — ✅ **on a real GameCube**; 014 (Wii remotes) to do |
 | **M4 — It saves** | Persistent save file, config read at boot | 015 — ✅ **reached**: SD and GameCube memory card, crash-safe |
 | **M5 — It ships** | `boot.dol` + `meta.xml` installable from the Homebrew Channel | 016 — ✅ packaged; 017 — ✅ launched from Swiss on hardware |
-| **M6 — It runs well** | Stable 30 fps, GameCube supported, polish | 018, 019 |
+| **M6 — It runs well** | Stable 30 fps, GameCube supported, polish | 018, 019 — the game is **playable on a real GameCube**: castle, first level, audio |
 
 ## Stories
 
@@ -88,7 +88,7 @@ the game code**. That is the guiding rule for the whole roadmap.
 ### Open defects
 - [020 — Shadows flicker and drop out](020-shadow-decal-flicker.md) — found on hardware; the Z-decal bias is missing
 - [021 — Textures drop in and out with camera movement](021-texture-dropouts.md) — five causes ruled out by measurement; the projection fit is the remaining lead
-- [022 — Alignment exception entering the castle](022-alignment-traps-audit.md) 🟡 fixed, awaiting hardware confirmation; an audit for the same class follows
+- [022 — Alignment exception entering the castle](022-alignment-traps-audit.md) 🟢 fixed and confirmed on hardware; the audit for the same class remains
 
 ## Dependency graph
 

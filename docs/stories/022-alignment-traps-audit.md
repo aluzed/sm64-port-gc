@@ -1,7 +1,7 @@
 # STORY-022 — Alignment exception entering the castle, and the audit it implies
 
 **Epic:** 0 — Foundations
-**Status:** 🟡 Cause found and fixed; **awaiting hardware confirmation**, then an audit
+**Status:** 🟢 Fixed and **confirmed on hardware**; the audit remains
 **Depends on:** STORY-003
 **Estimate:** S for the fix (done), M for the audit
 **Platform:** GC + Wii
@@ -62,7 +62,7 @@ first, arbitrarily far from the allocation that caused it.
 
 ## Tasks
 
-1. **Confirm on hardware.** Enter the castle. Nothing else proves it.
+1. ✅ **Confirmed on hardware.** The castle loads, the first level is playable, audio holds.
 2. **Audit for the same class.** This one was found by crashing; there is no reason to think it
    is the only one. Places worth a pass:
    - every allocator with a bump pointer, and every caller passing a byte count rather than a
@@ -82,7 +82,7 @@ first, arbitrarily far from the allocation that caused it.
 
 ## Acceptance criteria
 
-- [ ] The castle loads on a real GameCube.
+- [x] The castle loads on a real GameCube.
 - [ ] The audit in task 2 has been run and its result recorded here, including "found nothing"
       if that is the answer.
 - [ ] The guard in task 3 exists, or a note says why it was not worth it.
