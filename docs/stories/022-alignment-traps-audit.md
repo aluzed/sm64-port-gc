@@ -63,8 +63,8 @@ first, arbitrarily far from the allocation that caused it.
 ## Tasks
 
 1. ✅ **Confirmed on hardware.** The castle loads, the first level is playable, audio holds.
-2. **Audit for the same class.** This one was found by crashing; there is no reason to think it
-   is the only one. Places worth a pass:
+2. ✅ **Audited.** Result below. The short version: no second instance found, and the tool that
+   looked is not worth keeping as a gate. Places checked:
    - every allocator with a bump pointer, and every caller passing a byte count rather than a
      `sizeof` — `level_cmd_set_terrain_data` was the only one in `src/`, but `src/pc` should be
      checked too;
@@ -72,10 +72,9 @@ first, arbitrarily far from the allocation that caused it.
      that traps;
    - anything DMA'd, where 32-byte alignment is required and the failure is silent corruption
      instead of an exception.
-3. **Make the failure loud instead of remote.** A debug-only check in `alloc_only_pool_alloc`
-   that traps immediately on returning a misaligned pointer would have named the culprit
-   directly, rather than pointing at the innocent graph node that used it. Cheap, and it turns
-   a class of hardware-only bug into something a single build reveals.
+3. ✅ **Done.** `-DCHECK_POOL_ALIGNMENT` stops the moment a pool returns a misaligned pointer,
+   instead of at whichever float first touches it. Verified not to fire through boot and the
+   attract demo, so every pool allocation on that path is 8-aligned.
 4. **Consider whether Dolphin can be made stricter.** If some configuration raises alignment
    exceptions instead of emulating them, the emulator loop regains coverage of this class.
    Worth twenty minutes to find out; if not, record that it cannot and move on.
@@ -83,6 +82,31 @@ first, arbitrarily far from the allocation that caused it.
 ## Acceptance criteria
 
 - [x] The castle loads on a real GameCube.
-- [ ] The audit in task 2 has been run and its result recorded here, including "found nothing"
-      if that is the answer.
-- [ ] The guard in task 3 exists, or a note says why it was not worth it.
+- [x] The audit in task 2 has been run and its result recorded here.
+- [x] The guard in task 3 exists.
+- [ ] Task 4, whether Dolphin can be made to raise alignment exceptions, is still open.
+
+## Audit result
+
+**`-Wcast-align=strict` over the whole build: about 320 hits, and no second bug.**
+
+| Where | Hits | Verdict |
+|---|---|---|
+| `src/engine/level_script.c`, `geo_layout.[ch]` | 212 | command streams that are 4-aligned by construction — the `CMD_GET` macros. Not a hazard |
+| `src/goddard/*` | 68 | same shape, dynlist commands |
+| `src/audio/*` | 24 | N64 audio data, aligned by construction |
+| `src/game/save_file.c` | 4 | `SaveBlockSignature` is two `u16`s, so it needs 2-byte alignment and gets it |
+| `src/pc/storage_ogc.c` | 4 | ours, false positives: the buffer is declared `aligned(32)`. Rewritten as a union of the header and the bytes, which removes the cast and states the intent in the type instead of in a comment |
+
+**The tool is too blunt to keep as a gate.** It cannot tell a pointer into a structurally
+aligned command stream from one into a heap block, and everything it flagged here is the former.
+Turning it on permanently would mean 320 warnings to ignore, which is worse than none.
+
+What actually protects this port is task 3: the guard checks the property that matters, at the
+one place where it can be violated, and says so immediately. One bug of this class was found by
+crashing a console; the next one will name itself.
+
+The other real defence is already in place elsewhere and worth listing, since it is the same
+family: every buffer the GP or the DSP reads by DMA is `memalign(32, ...)` or
+`__attribute__((aligned(32)))` and flushed with `DCFlushRange`. Those were written blind against
+the hardware manual and the first hardware run confirmed them.

@@ -84,7 +84,15 @@ struct CardSectorHeader {
 };
 
 static u8 card_work[CARD_WORKAREA_SIZE] __attribute__((aligned(32)));
-static u8 card_sector_buf[CARD_SECTOR_MAX] __attribute__((aligned(32)));
+
+// A union rather than a byte array plus a cast: the header and the payload
+// genuinely share this storage, and saying so in the type removes the cast
+// along with any question about whether the alignment holds. CARD_Read and
+// CARD_Write need 32 bytes of it anyway.
+static union {
+    struct CardSectorHeader header;
+    u8 bytes[CARD_SECTOR_MAX];
+} card_sector __attribute__((aligned(32)));
 static bool card_ready;
 static s32 card_slot;
 static u32 card_sector_size;
@@ -106,7 +114,7 @@ static bool card_mount(void) {
 }
 
 static bool card_read_sector(card_file *f, u32 index) {
-    return CARD_Read(f, card_sector_buf, card_sector_size,
+    return CARD_Read(f, card_sector.bytes, card_sector_size,
                      index * card_sector_size) >= 0;
 }
 
@@ -115,11 +123,11 @@ static u32 card_sector_seq(card_file *f, u32 index, u32 expect_len) {
     if (!card_read_sector(f, index)) {
         return 0;
     }
-    const struct CardSectorHeader *h = (const struct CardSectorHeader *) card_sector_buf;
+    const struct CardSectorHeader *h = &card_sector.header;
     if (h->magic != CARD_MAGIC || h->len != expect_len || h->seq == 0) {
         return 0;
     }
-    if (h->sum != card_checksum(card_sector_buf + sizeof(*h), expect_len)) {
+    if (h->sum != card_checksum(card_sector.bytes + sizeof(*h), expect_len)) {
         return 0;
     }
     return h->seq;
@@ -170,7 +178,7 @@ static bool card_read_file(const char *name, void *buf, u32 size) {
             if (newest == 0 && card_sector_seq(&f, 0, size) == 0) {
                 ok = false;
             } else {
-                memcpy(buf, card_sector_buf + sizeof(struct CardSectorHeader), size);
+                memcpy(buf, card_sector.bytes + sizeof(struct CardSectorHeader), size);
                 ok = true;
             }
         }
@@ -201,15 +209,15 @@ static bool card_write_file(const char *name, const void *buf, u32 size) {
         const u32 newest_seq = (seq0 > seq1) ? seq0 : seq1;
         const u32 target = (seq0 > seq1) ? 1 : 0;   // never overwrite the good one
 
-        memset(card_sector_buf, 0, card_sector_size);
-        struct CardSectorHeader *h = (struct CardSectorHeader *) card_sector_buf;
+        memset(card_sector.bytes, 0, card_sector_size);
+        struct CardSectorHeader *h = &card_sector.header;
         h->magic = CARD_MAGIC;
         h->seq = newest_seq + 1;
         h->len = size;
-        memcpy(card_sector_buf + sizeof(*h), buf, size);
-        h->sum = card_checksum(card_sector_buf + sizeof(*h), size);
+        memcpy(card_sector.bytes + sizeof(*h), buf, size);
+        h->sum = card_checksum(card_sector.bytes + sizeof(*h), size);
 
-        ok = CARD_Write(&f, card_sector_buf, card_sector_size,
+        ok = CARD_Write(&f, card_sector.bytes, card_sector_size,
                         target * card_sector_size) >= 0;
         CARD_Close(&f);
     }

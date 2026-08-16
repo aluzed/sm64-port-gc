@@ -561,6 +561,17 @@ void *alloc_only_pool_alloc(struct AllocOnlyPool *pool, s32 size) {
     }
     addr = (u8 *) (pool->lastBlock + 1) + pool->lastBlockNextPos;
     pool->lastBlockNextPos += s;
+#ifdef CHECK_POOL_ALIGNMENT
+    // Build with -DCHECK_POOL_ALIGNMENT to stop the moment a pool hands back a
+    // misaligned pointer, instead of at whichever float first touches it. That
+    // distinction is the whole difficulty of the class: the castle crash landed
+    // in init_graph_node_ortho_projection, which had done nothing wrong, while
+    // the allocation that caused it was an area's collision data several calls
+    // earlier. This check would have named it directly.
+    if (((uintptr_t) addr & 7) != 0) {
+        abort();
+    }
+#endif
     return addr;
 }
 
