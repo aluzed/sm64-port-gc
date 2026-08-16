@@ -66,6 +66,23 @@
 #define GFX_GX_HW_PERSP 1
 #endif
 
+// How far a ZMODE_DEC decal is pulled towards the viewer, in NDC, where the
+// depth range is [-1, 0] and one level of the 24-bit buffer is about 6e-8.
+//
+// It only has to break a tie. A shadow is coplanar with its ground, so the two
+// depths differ by interpolation rounding, not by any real distance; 1e-4 is
+// some sixteen hundred levels, comfortably above that noise and still under a
+// world unit at the distance the camera normally sits from the floor.
+//
+// The tension to watch, if this ever needs changing: a constant bias in NDC is
+// a small world-space offset near the camera and a large one far away, because
+// the depth range is compressed with distance. Too small and shadows shimmer
+// again; too large and a shadow lifts off a slope seen edge-on, or punches
+// through a thin floor. Override with -DGFX_GX_DECAL_BIAS=... to try a value.
+#ifndef GFX_GX_DECAL_BIAS
+#define GFX_GX_DECAL_BIAS 0.0001f
+#endif
+
 // Distance fog. Set to 0 to drop the fog stage entirely, which is the A/B to
 // run whenever a scene looks washed out: an over-applied fog and a missing
 // texture are hard to tell apart by eye.
@@ -156,8 +173,15 @@ static void gfx_gx_apply_zmode(void) {
     GX_SetZMode(GX_FALSE, GX_ALWAYS, GX_FALSE);
     return;
 #endif
-    // A decal (Mario's shadow, footprints) must test against the surface it
-    // sits on but never write depth, otherwise it fights with it.
+    // A decal -- a shadow, a footprint, a painting surface -- must test against
+    // the surface it sits on and never write depth, or it fights with it.
+    //
+    // Not writing is only half of it. The decal is *coplanar* with its host, so
+    // the two interpolate to depths that differ only by rounding: GX_LEQUAL
+    // then passes on some pixels and fails on others, which is z-fighting, and
+    // on a large flat ground it reads as a shimmering, partly missing shadow.
+    // The reference backend adds glPolygonOffset(-2, -2) for exactly this. The
+    // bias itself is applied in draw_triangles and in the projection.
     if (gx_state.zmode_decal) {
         GX_SetZMode(GX_TRUE, GFX_GX_ZFUNC_NEARER, GX_FALSE);
         return;
@@ -993,7 +1017,14 @@ static bool gfx_gx_setup_perspective(const float *buf, size_t stride, size_t nve
     // Getting this pair wrong is what split the depth buffer between two
     // conventions; keep it derived from whatever the CPU path in
     // draw_triangles writes, never from the two independently.
-    gfx_gx_load_persp(1.0f - p, q);
+    //
+    // The decal bias follows the same rule. Subtracting b from z_ndc is
+    // -(mt22 + b) + mt23/w, so it is one addition here and the two paths stay
+    // in step. The previous attempt at a decal bias sidestepped this by forcing
+    // decals onto the CPU divide, which cost them perspective-correct
+    // interpolation for no reason.
+    const float bias = gx_state.zmode_decal ? GFX_GX_DECAL_BIAS : 0.0f;
+    gfx_gx_load_persp(1.0f - p + bias, q);
     return true;
 }
 #endif  // GFX_GX_HW_PERSP
@@ -1140,7 +1171,18 @@ static void gfx_gx_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t bu
             // The reading was of a corrupted buffer and the conclusion was
             // wrong: it inverted the sort order, which is what put the white of
             // Mario's eyes in front of his pupils and Bowser under the floor.
-            GX_Position3f32(v[0] * inv_w, v[1] * inv_w, (v[2] * inv_w) - 1.0f);
+            //
+            // Nearer is more negative here, so a decal is biased by
+            // subtracting. Clamped, because a decal on geometry already at the
+            // near plane would otherwise be pushed past it and clipped away.
+            float z = (v[2] * inv_w) - 1.0f;
+            if (gx_state.zmode_decal) {
+                z -= GFX_GX_DECAL_BIAS;
+                if (z < -1.0f) {
+                    z = -1.0f;
+                }
+            }
+            GX_Position3f32(v[0] * inv_w, v[1] * inv_w, z);
         }
 
 #if defined(GFX_GX_DEBUG_CC)

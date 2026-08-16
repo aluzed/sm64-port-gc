@@ -1,7 +1,7 @@
 # STORY-020 — Shadows flicker and drop out
 
 **Epic:** 2 — GX rendering
-**Status:** To do — reported on **real hardware**, 2026-08-16
+**Status:** 🟡 Bias implemented on both paths; **awaiting hardware confirmation**
 **Depends on:** STORY-009, STORY-010
 **Estimate:** S (half a day)
 **Platform:** GC + Wii
@@ -62,9 +62,33 @@ The previous attempt sidestepped this by forcing decals onto the CPU path. That 
 costs perspective-correct interpolation on every decal, and it is unnecessary now that the
 coefficient is understood.
 
+## What landed
+
+The bias is back, applied on both projection paths from a single constant, `GFX_GX_DECAL_BIAS`,
+overridable at build time.
+
+- CPU divide: `z -= bias`, since nearer is more negative in GX's `[-1, 0]`. Clamped at −1, so a
+  decal on geometry already at the near plane is not pushed past it and clipped away.
+- Hardware projection: `mt22 += bias`. Subtracting `b` from `z_ndc = -mt22 + mt23/w` is exactly
+  that, so the two paths stay derived from one relation instead of being reasoned out twice —
+  which is the mistake that cost two sessions in [STORY-009](009-vertex-format-draw-triangles.md).
+
+Value: **1e-4**, about sixteen hundred levels of the 24-bit buffer. It only has to break a tie:
+a shadow is coplanar with its ground, so the two depths differ by interpolation rounding rather
+than by any real distance. At the distance the camera normally sits from the floor that is
+under a world unit.
+
+The tension to keep in mind if it needs changing: a constant bias in NDC is a small world-space
+offset near the camera and a large one far away, because the depth range compresses with
+distance. Too small and the shimmer returns; too large and a shadow lifts off a slope seen
+edge-on, or punches through a thin floor.
+
+Dolphin will not settle this. It renders shadows without visible fighting at its own internal
+resolution, and the defect was reported on a CRT in the first place.
+
 ## Tasks
 
-1. Reinstate the decal bias, applied on **both** paths as above.
+1. ✅ Reinstate the decal bias, applied on **both** paths as above.
 2. Size it by measurement, not by taste. Depth is 24-bit over `zn ∈ [0,1]`, so one level is
    about 6e-8. The bias has to clear the interpolation error across a large ground polygon
    without lifting a shadow visibly off a slope seen edge-on. Start from the previous 8e-4 and
