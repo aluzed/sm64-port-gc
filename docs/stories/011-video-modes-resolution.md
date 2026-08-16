@@ -1,7 +1,7 @@
 # STORY-011 — Video modes, resolution, PAL/NTSC and 16:9
 
 **Epic:** 2 — GX rendering
-**Status:** 🟡 The 50 Hz cadence is fixed and measured; mode selection, 16:9 and overscan remain
+**Status:** 🟡 Cadence, mode selection, 480p and 16:9 done; **overscan remains**
 **Depends on:** STORY-004, STORY-009
 **Estimate:** M (2-3 d)
 **Platform:** GC + Wii
@@ -10,6 +10,35 @@
 > with `VSYNCS_PER_FRAME = 2`, the Wii in NTSC 60 Hz runs at **29.97 fps** (correct), while the
 > GameCube in PAL 50 Hz runs at **25.00 fps** — 17 % too slow, music and physics included.
 > Task 3 below is therefore not optional.
+
+## What landed beyond the cadence
+
+**The picture's aspect is not the framebuffer's**, and conflating them was an active bug. PAL
+576i renders 640x528, a ratio of 1.212, and the VI displays that as a full 4:3 frame; `gfx_pc`
+computes `aspect_ratio = width / height` and so laid the HUD out for a screen narrower than the
+one it was on, inset by about fifteen units a side. Every PAL console was affected, which is
+most of them in Europe.
+
+Fixed without disturbing the other backends: `gfx_pc_override_aspect_ratio()` (declared in a
+dependency-free `gfx_pc_aspect.h`, because `gfx_pc.h` drags in the GBI and cannot be included
+from a libogc file) is called from `gfx_ogc_start_frame`. The dimensions stay the real pixel
+counts, since `gfx_pc` also uses them for the viewport and the scissor — only the ratio is
+corrected.
+
+**16:9** follows from the same place. On Wii the console knows, through
+`CONF_GetAspectRatio()`. A GameCube has no such setting, so it is a `widescreen` line in the
+config file. The frame stays 640x480 and the television stretches it, which is what GameCube
+games did.
+
+**480p** when all three conditions hold: a component cable is plugged in
+(`VIDEO_HaveComponentCable()`), the user asked for progressive (`CONF_GetProgressiveScan()` on
+Wii; on GameCube it is B held at boot, which the mode already reflects), and the mode has a
+progressive counterpart. 50 Hz PAL has none, and asking for a mode the cable cannot carry is
+how a console ends up showing nothing.
+
+The refresh rate itself is never overridden. Forcing PAL60 on a console set to 50 Hz risks a
+black screen on a 50 Hz-only television, and the cadence problem it would solve is already
+solved on the clock.
 
 ## Context
 

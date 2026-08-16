@@ -1608,6 +1608,14 @@ void gfx_get_dimensions(uint32_t *width, uint32_t *height) {
     gfx_wapi->get_dimensions(width, height);
 }
 
+// See gfx_pc_aspect.h. On a television the framebuffer's proportions and the
+// picture's are not the same thing, and only the backend knows the difference.
+void gfx_pc_override_aspect_ratio(float aspect_ratio) {
+    if (aspect_ratio > 0.0f) {
+        gfx_current_dimensions.aspect_ratio = aspect_ratio;
+    }
+}
+
 void gfx_init(struct GfxWindowManagerAPI *wapi, struct GfxRenderingAPI *rapi, const char *game_name, bool start_in_fullscreen) {
     gfx_wapi = wapi;
     gfx_rapi = rapi;

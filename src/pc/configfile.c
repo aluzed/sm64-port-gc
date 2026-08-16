@@ -44,10 +44,14 @@ unsigned int configKeyStickUp    = 0x11;
 unsigned int configKeyStickDown  = 0x1F;
 unsigned int configKeyStickLeft  = 0x1E;
 unsigned int configKeyStickRight = 0x20;
+// Console only. A Wii reports its own aspect through CONF_GetAspectRatio, but
+// a GameCube has no such setting, so the player has to say.
+bool configWidescreen            = false;
 
 
 static const struct ConfigOption options[] = {
     {.name = "fullscreen",     .type = CONFIG_TYPE_BOOL, .boolValue = &configFullscreen},
+    {.name = "widescreen",     .type = CONFIG_TYPE_BOOL, .boolValue = &configWidescreen},
     {.name = "key_a",          .type = CONFIG_TYPE_UINT, .uintValue = &configKeyA},
     {.name = "key_b",          .type = CONFIG_TYPE_UINT, .uintValue = &configKeyB},
     {.name = "key_start",      .type = CONFIG_TYPE_UINT, .uintValue = &configKeyStart},
@@ -98,9 +102,17 @@ static char *read_file_line(FILE *file) {
     return buffer;
 }
 
+// isspace() takes an int holding an *unsigned char* value or EOF. Handing it a
+// plain char is undefined for anything with the top bit set, and -fsigned-char
+// -- which this port requires on PowerPC -- makes that reachable: one accented
+// character in the config file indexes before the classification table.
+static int is_space(char c) {
+    return isspace((unsigned char) c);
+}
+
 // Returns the position of the first non-whitespace character
 static char *skip_whitespace(char *str) {
-    while (isspace(*str))
+    while (is_space(*str))
         str++;
     return str;
 }
@@ -108,10 +120,10 @@ static char *skip_whitespace(char *str) {
 // NULL-terminates the current whitespace-delimited word, and returns a pointer to the next word
 static char *word_split(char *str) {
     // Precondition: str must not point to whitespace
-    assert(!isspace(*str));
+    assert(!is_space(*str));
 
     // Find either the next whitespace char or end of string
-    while (!isspace(*str) && *str != '\0')
+    while (!is_space(*str) && *str != '\0')
         str++;
     if (*str == '\0') // End of string
         return str;
@@ -159,7 +171,7 @@ void configfile_load(const char *filename) {
         char *tokens[2];
         int numTokens;
 
-        while (isspace(*p))
+        while (is_space(*p))
             p++;
         numTokens = tokenize_string(p, 2, tokens);
         if (numTokens != 0) {

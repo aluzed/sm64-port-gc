@@ -22,7 +22,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "../configfile.h"
 #include "gfx_ogc.h"
+#include "gfx_pc_aspect.h"
 #include "gfx_window_manager_api.h"
 
 #define OGC_FIFO_SIZE (256 * 1024)
@@ -32,6 +34,10 @@ static void *xfb[2];
 static int cur_xfb;
 // Set by swap_buffers_begin, i.e. only when the game submitted a display list.
 static bool frame_has_content;
+// The picture's aspect, 4:3 or 16:9, which the framebuffer's dimensions do not
+// give away. See gfx_ogc_start_frame.
+static float display_aspect = 4.0f / 3.0f;
+static bool display_is_progressive;
 static void *gp_fifo;
 
 static uint64_t start_ticks;
@@ -104,9 +110,49 @@ static void gfx_ogc_shutdown(void) {
 static void gfx_ogc_init_video(void) {
     VIDEO_Init();
 
-    // Honours the console's own settings: PAL/NTSC, 50/60 Hz, 480p when a
-    // component cable is present. Picking a mode by hand is STORY-011.
+    // Honours the console's own settings: PAL/NTSC and 50/60 Hz. Never override
+    // them -- forcing PAL60 on a console set to 50 Hz can leave a 50 Hz-only
+    // television with no picture at all, and the cadence is handled on the
+    // clock instead (see the pacing block above).
     rmode = VIDEO_GetPreferredMode(NULL);
+
+    // Progressive scan, when the hardware and the user both allow it.
+    //
+    // Three conditions, and all three matter: a component cable has to be
+    // plugged in, the console has to be set to progressive (on Wii; on
+    // GameCube it is the B button held at boot, which VIDEO_HaveComponentCable
+    // does not report), and the mode has to have a progressive counterpart.
+    // Asking for 480p without the cable is how a console shows a black screen.
+    if (VIDEO_HaveComponentCable()) {
+#ifdef TARGET_WII
+        const bool wants_progressive = CONF_GetProgressiveScan() > 0;
+#else
+        const bool wants_progressive = true;
+#endif
+        if (wants_progressive) {
+            switch (rmode->viTVMode >> 2) {
+                case VI_NTSC:  rmode = &TVNtsc480Prog;  break;
+                case VI_EURGB60: rmode = &TVEurgb60Hz480Prog; break;
+                case VI_MPAL:  rmode = &TVMpal480Prog;  break;
+                default: break;   // 50 Hz PAL has no progressive mode
+            }
+        }
+    }
+    display_is_progressive = (rmode->viTVMode & VI_NON_INTERLACE) != 0;
+
+    // The aspect the *picture* has, which is not the aspect the framebuffer
+    // has. PAL 576i renders 640x528, a ratio of 1.212, and the VI shows it as a
+    // full 4:3 frame; left to compute its own ratio, gfx_pc lays the HUD out
+    // for a screen narrower than the one it is on. Widescreen is the same
+    // problem the other way: the frame is stretched and nothing in its
+    // dimensions says so.
+#ifdef TARGET_WII
+    const bool widescreen = CONF_GetAspectRatio() == CONF_ASPECT_16_9;
+#else
+    // A GameCube has no aspect setting to ask, so the player states it.
+    const bool widescreen = configWidescreen;
+#endif
+    display_aspect = widescreen ? (16.0f / 9.0f) : (4.0f / 3.0f);
 
     // Take a private copy and force anti-aliasing off.
     //
@@ -237,6 +283,12 @@ static void gfx_ogc_handle_events(void) {
 }
 
 static bool gfx_ogc_start_frame(void) {
+    // gfx_start_frame has just recomputed the aspect ratio from the framebuffer
+    // dimensions, which is right for a window and wrong for a television.
+    // Correcting it here rather than in get_dimensions is deliberate: gfx_pc
+    // also uses those dimensions as a pixel count, for the viewport and the
+    // scissor, so they have to stay the real ones.
+    gfx_pc_override_aspect_ratio(display_aspect);
     return true;
 }
 
