@@ -41,6 +41,13 @@
 *.swp
 .vscode/*
 
+# ROM archives / base ROMs (never commit copyrighted material)
+*.zip
+*.7z
+*.rar
+*.n64
+*.v64
+
 # General project-specific ignores
 __pycache__/*
 doxygen/doxygen/*
