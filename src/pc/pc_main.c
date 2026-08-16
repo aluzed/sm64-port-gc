@@ -27,6 +27,7 @@
 #include "audio/audio_alsa.h"
 #include "audio/audio_sdl.h"
 #include "audio/audio_null.h"
+#include "audio/audio_ogc.h"
 
 #ifndef TARGET_OGC
 #include "controller/controller_keyboard.h"
@@ -214,6 +215,11 @@ void main_func(void) {
 #ifdef TARGET_WEB
     if (audio_api == NULL && audio_sdl.init()) {
         audio_api = &audio_sdl;
+    }
+#endif
+#ifdef TARGET_OGC
+    if (audio_api == NULL && audio_ogc.init()) {
+        audio_api = &audio_ogc;
     }
 #endif
     if (audio_api == NULL) {

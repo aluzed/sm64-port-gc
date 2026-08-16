@@ -68,7 +68,7 @@ the game code**. That is the guiding rule for the whole roadmap.
 - [011 — Video modes, resolution, PAL/NTSC and 16:9](011-video-modes-resolution.md)
 
 ### Epic 3 — Audio
-- [012 — 32 kHz stereo audio backend (AI DMA)](012-audio-backend-ai-dma.md)
+- [012 — 32 kHz stereo audio backend (AI DMA)](012-audio-backend-ai-dma.md) ✅ **done**
 
 ### Epic 4 — Input
 - [013 — GameCube controller (`PAD`) → `OSContPad`](013-gamecube-controller-pad.md) 🟡 **implemented, unvalidated**
@@ -189,8 +189,18 @@ they had to be relative: a batch qualified for the hardware path on a spread in 
 which of its own polygons was in front. Both thresholds are now relative to the batch's own
 spread.
 
-Still missing: **audio** (STORY-012), the **50 Hz cadence** fix (STORY-011), and the rest of
-the combiner effects — fog, decals, noise (STORY-010).
+**Audio works** (STORY-012): measured at 32 kHz stereo out of Dolphin's DSP dump, with a
+lag-1 autocorrelation of 0.965 — a real waveform, not noise.
+
+A frame flicker that had been present since the video backend landed is also fixed: the
+EFB→XFB copy sat in `swap_buffers_begin`, which runs once per *display list* rather than once
+per frame, so each copy cleared the EFB and wiped the previous one's work. Two frames in three
+showed the background with no Mario head. See [STORY-004](004-video-window-manager-backend.md)
+— including the method lesson, since single screenshots cannot show a flicker and several
+earlier conclusions in this repo were distorted by it.
+
+Still missing: the **50 Hz cadence** fix (STORY-011), and the rest of the combiner effects —
+fog, decals, noise (STORY-010).
 
 Three lessons from getting here:
 

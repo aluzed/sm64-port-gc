@@ -1,7 +1,7 @@
 # STORY-012 — 32 kHz stereo audio backend (AI DMA)
 
 **Epic:** 3 — Audio
-**Status:** To do
+**Status:** ✅ Implemented and measured under Dolphin — hardware and long-run testing pending
 **Depends on:** STORY-003 *(parallelisable with the GX epic)*
 **Estimate:** M (2-3 d)
 **Platform:** GC + Wii
@@ -116,3 +116,44 @@ right pitch, so the game is playable.
 - Dolphin is more tolerant than hardware about audio starvation. Perfect sound on the emulator
   guarantees nothing; validate on a console.
 - The EU version uses 656/640 samples: size `BUFFER_SIZE` for the worst case, not for US.
+
+## Implementation log
+
+`src/pc/audio/audio_ogc.c`, ~130 lines: a four-buffer ring, `AUDIO_SetDSPSampleRate(AI_SAMPLERATE_32KHZ)`,
+a DMA callback that chains the next buffer, `DCFlushRange` on every write, and
+`_CPU_ISR_Disable`/`Restore` around every access to the shared indices.
+
+### Verified by measurement, not by ear
+
+Audio cannot be judged from a screenshot, so it was measured: Dolphin's `DumpAudio` writes the
+DSP output to a WAV, which was then analysed.
+
+| Check | Result |
+|---|---|
+| Format | **32000 Hz, stereo, 16-bit** — no resampling, as intended |
+| Peak / mean amplitude | 30211 / 2360 out of 32767 — real level, not clipped, not silent |
+| Non-silent samples | 84.3 % |
+| Lag-1 autocorrelation | **0.965 (L), 0.969 (R)** — a continuous waveform, not noise |
+| L vs R mean difference | 299 — genuine stereo, not duplicated mono |
+| Envelope over 3 s | 7048, 6562, 2574, 867, 10026, 11294, 11561, 19636, 21603, … — musical dynamics |
+
+The autocorrelation is the discriminating one: garbage memory played as audio would sit near
+zero, whereas music at 32 kHz has adjacent samples almost identical.
+
+### Choices worth recording
+
+- **Queue saturation drops the block** rather than blocking. Stalling `play()` would stall the
+  game loop, and SM64 self-regulates through `buffered()` anyway.
+- **`buffered()` slightly over-reports**, counting the buffer currently being played. That is
+  the safe direction: it makes `pc_main.c` produce the shorter 528-sample block and lets the
+  queue drain rather than grow.
+- Only the narrow libogc headers are included, per the STORY-003 rule.
+
+### Not yet verified
+
+- No crackle over a 10-minute session (the acceptance criterion asks for it).
+- Channels are confirmed distinct but **not confirmed the right way round** — that needs a
+  reference to compare against.
+- Nothing on real hardware, where DMA starvation behaves differently from Dolphin.
+- The rate depends on the game running at 30 fps. In PAL 50 Hz (STORY-011) the game runs at
+  25 fps and the audio will starve continuously; the two must be validated together.
