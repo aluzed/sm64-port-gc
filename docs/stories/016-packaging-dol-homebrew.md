@@ -50,8 +50,16 @@ Channel, so I do not have to compile it myself.
    `short_description` and `long_description`. Keep `<version>` up to date on every release;
    deriving it from `git describe --tags` avoids forgetting.
 
-3. **`packaging/wii/icon.png`**: 128×48 pixels, PNG. To be produced by a contributor; a textual
-   placeholder avoids blocking the story until then.
+3. **`packaging/wii/icon.png`** — ✅ done. 128×48 PNG, the boot splash captured from this port
+   itself at 4× internal resolution so the logo is sharp rather than an upscale of 640×480.
+   `packaging/icon-512.png` is the same frame cropped square, for the README.
+
+   **These two files are ROM-derived**, unlike everything else in the repository: the logo they
+   show is drawn from assets the build extracts from the base ROM. The rest of the project
+   keeps such material out of version control on purpose, and the acceptance criterion above
+   says `dist/` must contain none of it. Committed anyway, deliberately, because an icon is
+   what makes the Homebrew Channel entry usable — but it is the one exception, it should stay
+   the only one, and a drawn icon owing nothing to the ROM would remove the question entirely.
 
 4. **README section.** Document in `README.md`:
    - installing devkitPro (graphical installer on Windows, `pacman` on Linux);
