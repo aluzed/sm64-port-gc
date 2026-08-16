@@ -69,6 +69,17 @@ than guessing from the symbol name is what made that obvious.
 With the allocator aligned, the castle loads and the first level is playable, audio included.
 A real GameCube now runs this port past the point where it used to die.
 
+### Fourth run: the rendering pass lands
+
+Shadow bias, corrected display aspect, 16:9 and 480p detection, all in one build.
+
+**"Enormous reduction in flickering almost everywhere."** Shadows stable. One or two textures
+still misbehave, captured on video for later, but nothing resembling what it was.
+
+Two of those four could only ever have been judged here: the shadow bias, whose failure modes
+are opposite — too little and it shimmers, too much and shadows lift off slopes — and the
+display aspect, which on a PAL set had the HUD inset by fifteen units a side.
+
 Still unverified on hardware: a long session for audio drift, the memory card save surviving a
 power cycle, 50/60 Hz switching, and overscan on a CRT.
 

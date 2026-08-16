@@ -1,7 +1,7 @@
 # STORY-020 — Shadows flicker and drop out
 
 **Epic:** 2 — GX rendering
-**Status:** 🟡 Bias implemented on both paths; **awaiting hardware confirmation**
+**Status:** ✅ **Fixed and confirmed on a real GameCube** (2026-08-16). 1e-4 was the right size first time; no shadow was reported detaching from a slope
 **Depends on:** STORY-009, STORY-010
 **Estimate:** S (half a day)
 **Platform:** GC + Wii
@@ -89,7 +89,9 @@ resolution, and the defect was reported on a CRT in the first place.
 ## Tasks
 
 1. ✅ Reinstate the decal bias, applied on **both** paths as above.
-2. Size it by measurement, not by taste. Depth is 24-bit over `zn ∈ [0,1]`, so one level is
+2. ✅ Size confirmed on hardware at 1e-4: the shimmer is gone and nothing detaches. Left as written, with the reasoning, in case a scene is found that needs otherwise.
+
+   Original note: size it by measurement, not by taste. Depth is 24-bit over `zn ∈ [0,1]`, so one level is
    about 6e-8. The bias has to clear the interpolation error across a large ground polygon
    without lifting a shadow visibly off a slope seen edge-on. Start from the previous 8e-4 and
    check both extremes.
