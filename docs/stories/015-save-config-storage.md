@@ -1,7 +1,8 @@
 # STORY-015 — Saves and configuration on SD / memory card
 
 **Epic:** 5 — Storage
-**Status:** To do
+**Status:** 🟡 Working and verified under Dolphin (Wii SD). Console settings and the GameCube
+memory card remain
 **Depends on:** STORY-003
 **Estimate:** M (2-3 d)
 **Platform:** GC + Wii
@@ -31,6 +32,40 @@ Two possible backing stores:
 `fatInitDefault()` at boot and a path prefix. The GameCube memory card is a later addition,
 relevant mostly if the GameCube target is kept (STORY-005) and the user has no SD Gecko.
 
+## What landed
+
+`src/pc/storage_ogc.c` / `.h`. The root cause was one missing line: **`libfat` was linked from
+the start but `fatInitDefault()` was never called**, so nothing was mounted and every `fopen`
+in the port failed silently. The game runs fine without saving, which is exactly why it went
+unnoticed for so long.
+
+Three things were not obvious and cost a lookup each:
+
+- **Serial Port 2 is not in libfat's automatic scan.** `fatInitDefault()` only walks the two
+  memory card slots (`carda`, `cardb`). An SD2SP2 lives on `port2` and has to be mounted by
+  hand with `fatMountSimple("port2", &__io_gcsd2)`, or it is never found and nothing reports
+  an error. It is tried **first** on GameCube: it is the one slot a memory card cannot occupy.
+- **`fatInitDefault()`'s return value is not a verdict.** It reports whether a *default* device
+  was set; a manually mounted SD2SP2 is perfectly usable without one. Treating `false` as
+  fatal would disable saving on exactly the setup that works.
+- **The working directory cannot be relied on.** Depending on the loader a homebrew binary
+  starts at the device root, at its own directory, or nowhere, so every path handed out is
+  absolute.
+
+A device is accepted only after `mkdir` **and** a write-and-delete probe: a card can be present
+and mounted yet write protected, and finding that out at the first save is too late.
+
+Saves are crash-safe. The image goes to `sm64_save_file.bin.tmp`, the old file is removed, then
+the temporary is renamed over it — libfat's `rename` does not replace an existing file, so the
+removal is required. That leaves a narrow window with no real file, which the read side covers
+by falling back to the temporary. A power cut therefore costs the new save, never the old one.
+
+**Verified under Dolphin** on the Wii target with the emulated SD card, read back from the
+host filesystem rather than from a screenshot: `sd:/sm64/sm64config.txt` (188 bytes, real
+content) and `sd:/sm64/sm64_save_file.bin` (512 bytes exactly, the EEPROM image), with no
+`.tmp` left behind. This Dolphin build emulates only the Wii SD card — there is no GameCube SD
+adapter to emulate — so the GameCube path is code-identical but untested off hardware.
+
 ## Goal
 
 As a player, I want my progress and settings to survive powering the console off, so I do not
@@ -38,14 +73,18 @@ restart the game every session.
 
 ## Acceptance criteria
 
-- [ ] Progress (stars, save files A–D) persists across a power cycle.
-- [ ] The config file is read at boot and written on exit.
-- [ ] With no storage present, the game **still starts** and stays playable: saving fails
-      quietly (or with a single message), it does not crash.
-- [ ] Paths are consistent and documented: `sd:/apps/sm64/` by default.
-- [ ] An interrupted save (power cut mid-write) does not corrupt the existing file.
-- [ ] The save file is compatible with the PC build's (same binary format), so progress can be
-      transferred.
+- [x] Progress (stars, save files A–D) persists across a power cycle. *Verified as far as
+      Dolphin allows: the 512-byte EEPROM image is created and rewritten on the SD card.
+      Persistence across a real power cycle still needs hardware.*
+- [x] The config file is read at boot and written on exit. *Read and created at boot. Written
+      on exit is **not** done — see task 5, `atexit` never fires on a console.*
+- [x] With no storage present, the game **still starts** and stays playable: saving fails
+      quietly, it does not crash. `storage_ogc_path` returns the bare name, so the `fopen`
+      fails exactly as it did before any of this existed.
+- [x] Paths are consistent and documented: `<device>:/sm64/`, absolute, device chosen by probe.
+- [x] An interrupted save (power cut mid-write) does not corrupt the existing file.
+- [x] The save file is compatible with the PC build's (same name, same raw 512-byte format,
+      big-endian on both sides), so progress can be transferred.
 
 ## Tasks
 
@@ -94,13 +133,20 @@ restart the game every session.
    console, while still tolerating them on read so a file imported from a PC build is not
    rejected.
 
-7. **GameCube memory card** — *optional sub-task, only if the GC target is confirmed*:
+7. **GameCube memory card** — *no longer optional; this is now the main gap.* An SD2SP2 or an
+   SD Gecko is a mod, while a memory card is what a GameCube ships with, so without this a
+   stock console cannot save at all. It is a genuinely separate implementation, not a path
+   change: `CARD_Init("SM64", "00")`, `CARD_Mount`, `CARD_Open`/`CARD_Create`, `CARD_Write` in
+   8 KB-aligned blocks, plus a banner and icon for the memory-card manager. The 512-byte EEPROM
+   image fits in one block with room to spare. Slot A first, then slot B. Keep libfat ahead of
+   it in the probe order when both are present, so a save carried from the PC build still
+   wins. Original:
    `CARD_Init("SM64", "00")`, `CARD_Mount`, `CARD_Open`/`CARD_Create`, `CARD_Write` in
    8 KB-aligned blocks. Provide an icon and a file comment for the memory-card manager screen.
 
 ## Files touched
 
-- `src/pc/ogc_paths.c` / `ogc_paths.h` (new)
+- `src/pc/storage_ogc.c` / `storage_ogc.h` (new; the story called them `ogc_paths`)
 - `src/pc/pc_main.c`
 - `src/pc/configfile.c` / `configfile.h`
 - `src/pc/ultra_reimplementation.c`

@@ -13,7 +13,16 @@
 // PR/gbi.h declares through ultra64.h above. gfx_ogc.h is libogc-free and
 // exposes the Time Base through a real (non-inline) function.
 #include "gfx/gfx_ogc.h"
+// Same rule: storage_ogc.h is libogc-free, so the save path can be resolved
+// from here without dragging <fat.h> and its dependencies into a translation
+// unit that already has the GBI.
+#include "storage_ogc.h"
 #endif
+
+// Kept identical to the PC build's name and format -- a raw 512-byte EEPROM
+// dump, big-endian on both sides -- so a save can be carried between them.
+#define SAVE_FILE_NAME "sm64_save_file.bin"
+#define SAVE_FILE_PATH SAVE_FILE_NAME
 
 extern OSMgrArgs piMgrArgs;
 
@@ -159,8 +168,15 @@ s32 osEepromLongRead(UNUSED OSMesgQueue *mq, u8 address, u8 *buffer, int nbytes)
         memcpy(buffer, content + address * 8, nbytes);
         ret = 0;
     }
+#elif defined(TARGET_OGC)
+    // Goes through storage_ogc so a save interrupted by a power cut can be
+    // recovered from the temporary file it was being written to.
+    if (storage_ogc_read_file(SAVE_FILE_NAME, content, 512)) {
+        memcpy(buffer, content + address * 8, nbytes);
+        ret = 0;
+    }
 #else
-    FILE *fp = fopen("sm64_save_file.bin", "rb");
+    FILE *fp = fopen(SAVE_FILE_PATH, "rb");
     if (fp == NULL) {
         return -1;
     }
@@ -189,8 +205,10 @@ s32 osEepromLongWrite(UNUSED OSMesgQueue *mq, u8 address, u8 *buffer, int nbytes
         localStorage.sm64_save_file = btoa(str);
     }, content);
     s32 ret = 0;
+#elif defined(TARGET_OGC)
+    s32 ret = storage_ogc_write_file(SAVE_FILE_NAME, content, 512) ? 0 : -1;
 #else
-    FILE* fp = fopen("sm64_save_file.bin", "wb");
+    FILE* fp = fopen(SAVE_FILE_PATH, "wb");
     if (fp == NULL) {
         return -1;
     }

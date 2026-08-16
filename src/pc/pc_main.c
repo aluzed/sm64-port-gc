@@ -137,8 +137,15 @@ static void on_anim_frame(double time) {
 }
 #endif
 
+#ifdef TARGET_OGC
+#include "storage_ogc.h"
+#define CONFIG_FILE_PATH storage_ogc_path(CONFIG_FILE)
+#else
+#define CONFIG_FILE_PATH CONFIG_FILE
+#endif
+
 static void save_config(void) {
-    configfile_save(CONFIG_FILE);
+    configfile_save(CONFIG_FILE_PATH);
 }
 
 static void on_fullscreen_changed(bool is_now_fullscreen) {
@@ -155,7 +162,14 @@ void main_func(void) {
 #endif
     gEffectsMemoryPool = mem_pool_init(0x4000, MEMORY_POOL_LEFT);
 
-    configfile_load(CONFIG_FILE);
+#ifdef TARGET_OGC
+    // Before configfile_load: it reads, and writes the file back out when it is
+    // missing, so the device has to be mounted first. Every fopen in the port
+    // failed silently until this call existed.
+    storage_ogc_init();
+#endif
+
+    configfile_load(CONFIG_FILE_PATH);
     atexit(save_config);
 
 #ifdef TARGET_WEB

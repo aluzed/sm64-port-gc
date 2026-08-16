@@ -69,6 +69,7 @@ the game code**. That is the guiding rule for the whole roadmap.
 
 ### Epic 3 — Audio
 - [012 — 32 kHz stereo audio backend (AI DMA)](012-audio-backend-ai-dma.md) ✅ **done**
+- [015 — Saves and configuration on SD / memory card](015-save-config-storage.md) 🟡 SD works and is verified; the GameCube memory card remains
 
 ### Epic 4 — Input
 - [013 — GameCube controller (`PAD`) → `OSContPad`](013-gamecube-controller-pad.md) 🟡 **implemented, unvalidated**
