@@ -49,9 +49,9 @@ version control, and compiled binaries must not be redistributed.
 > **Status: in development.** `make TARGET_WII=1` and `make TARGET_GC=1` produce a `.dol` that
 > boots and runs at the correct 29.97 fps under Dolphin, with no exceptions. Build system,
 > video (libogc VIDEO/GX), GameCube controller, GX renderer and textures are in place: the
-> game reaches the title screen and plays its attract-mode demo, and the in-game HUD renders
-> pixel-perfect. Still missing: the **colour combiner translation** (3D surfaces come out with
-> wrong colours), **perspective-correct texturing** on 3D geometry, **audio**, and **Wii Remote
+> game reaches the title screen and plays its attract-mode demo, the in-game HUD renders
+> pixel-perfect and the intro Mario head shows its full colours. Still missing:
+> **perspective-correct texturing** (level surfaces are smeared), **audio**, and **Wii Remote
 > support**. Not yet tested on real hardware.
 > Track progress in [`docs/stories/`](docs/stories/README.md).
 

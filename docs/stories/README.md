@@ -42,7 +42,7 @@ the game code**. That is the guiding rule for the whole roadmap.
 |---|---|---|
 | **M0 — It builds** | `make TARGET_WII=1` produces a `.dol` that boots to a black screen without crashing | 001 → 005 — ✅ **reached under Dolphin**, hardware pending |
 | **M1 — It draws** | A textured triangle on screen through GX | 006 → 009 — ✅ **geometry on screen**, textures done |
-| **M2 — The intro** | The Mario logo / title screen render correctly | 010, 011 — 🟡 renders, colours still wrong |
+| **M2 — The intro** | The Mario logo / title screen render correctly | 010, 011 — ✅ intro Mario head and sky render in full colour |
 | **M3 — It plays** | Controller + audio: Mario is playable in the castle lobby | 012 → 014 |
 | **M4 — It saves** | Persistent save file, config read at boot | 015 |
 | **M5 — It ships** | `boot.dol` + `meta.xml` installable from the Homebrew Channel | 016, 017 |
@@ -61,9 +61,9 @@ the game code**. That is the guiding rule for the whole roadmap.
 
 ### Epic 2 — GX rendering
 - [006 — GX backend skeleton (`GfxRenderingAPI`)](006-gx-backend-skeleton.md) ✅ **done**
-- [007 — Translating the N64 colour combiner into TEV stages](007-colour-combiner-tev.md) ⬅️ **next**
+- [007 — Translating the N64 colour combiner into TEV stages](007-colour-combiner-tev.md) ✅ **done**
 - [008 — Textures: GX swizzle, cache and wrap modes](008-gx-textures.md) ✅ **done**
-- [009 — Vertex format and triangle submission](009-vertex-format-draw-triangles.md) 🟡 **base path landed; perspective correction to settle**
+- [009 — Vertex format and triangle submission](009-vertex-format-draw-triangles.md) ⬅️ **next** — perspective correction is now the only blocker for a correct in-game image
 - [010 — Effects: fog, noise, alpha compare, Z decals](010-effects-fog-noise-alpha.md)
 - [011 — Video modes, resolution, PAL/NTSC and 16:9](011-video-modes-resolution.md)
 
@@ -163,9 +163,10 @@ make TARGET_GC=1  -j8      # -> build/us_gc/sm64.us.dol
 | Wii | ~12.85 MB | ≈ 13.5 MB | ✅ 29.97 fps, 0 exceptions, textures rendering |
 | GameCube | ~12.82 MB | ≈ 13.4 MB | ⚠️ 25.00 fps (PAL 50 Hz), 0 exceptions |
 
-The game boots, reaches the title screen and plays its attract-mode demo. **The in-game HUD
-renders pixel-perfect.** 3D surfaces still come out with wrong colours (STORY-007) and
-smeared textures (STORY-009).
+The game boots, reaches the title screen and plays its attract-mode demo. The in-game HUD
+renders pixel-perfect, the intro Mario head shows its full colours and the sky renders
+correctly. **Level surfaces are still smeared** by affine texture interpolation, which is now
+the single blocker for a correct in-game image (STORY-009).
 
 Three lessons from getting here:
 

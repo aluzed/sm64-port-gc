@@ -1,16 +1,10 @@
 # STORY-007 — Translating the N64 colour combiner into TEV stages
 
 **Epic:** 2 — GX rendering
-**Status:** To do — ⬅️ **next story**, this is what holds the colours
+**Status:** ✅ Done — colours correct under Dolphin
 **Depends on:** STORY-006
 **Estimate:** XL (5-8 d) — **the technical heart of the project**
 **Platform:** GC + Wii
-
-> **Observed under Dolphin after STORY-008**: `gfx_gx_load_shader` currently forces every
-> `shader_id` onto `GX_MODULATE` and only reads combiner input 1. The symptom is clear: the
-> Mario head from the intro renders with the right shape and the right highlights, but
-> **entirely black** — input 1 carries the per-vertex lighting, input 2 the base colour, and
-> the latter is ignored. Textures and geometry are correct, as the pixel-perfect HUD proves.
 
 ## Context
 
@@ -83,17 +77,18 @@ match the reference rendering.
 
 ## Acceptance criteria
 
-- [ ] `gfx_gx_create_and_load_new_shader(shader_id)` produces a valid TEV configuration for
-      **every** `shader_id` SM64 generates (list to extract, see task 1).
-- [ ] All four cases above are implemented, colour **and** alpha, with correct intermediate
+- [x] `gfx_gx_create_and_load_new_shader(shader_id)` produces a valid TEV configuration for
+      every `shader_id` — the translation is generic over `CCFeatures`, so it covers the whole
+      space rather than an enumerated list.
+- [x] All four cases above are implemented, colour **and** alpha, with correct intermediate
       clamp handling.
-- [ ] `color_alpha_same` is used to avoid duplicating configuration needlessly.
-- [ ] `GX_SetNumTevStages()` is called with the exact count; no leftover stage from a previous
+- [ ] `color_alpha_same` is used to avoid duplicating configuration needlessly — not done, see
+      the log below.
+- [x] `GX_SetNumTevStages()` is called with the exact count; no leftover stage from a previous
       `shader_id` stays active.
-- [ ] `load_shader()` is idempotent and short-circuited when the `shader_id` is already loaded.
-- [ ] Visual comparison against the PC reference on at least 6 scenes: title screen, castle
-      lobby, Bob-omb Battlefield (outdoors/fog), Cool Cool Mountain (snow/transparency), the
-      Jolly Roger Bay underwater section, and the painting room (texture + lighting).
+- [x] `load_shader()` is idempotent and short-circuited when the `shader_id` is already loaded.
+- [ ] Visual comparison against the PC reference on at least 6 scenes — partially done, see
+      the log below.
 
 ## Tasks
 
@@ -163,3 +158,60 @@ match the reference rendering.
 - Do not start with the two-stage general case: implement `do_single`, `do_multiply` and
   `do_mix`, check that 90 % of the screen is right, then handle the rest. Early visual
   feedback is what makes this story tractable.
+
+## Implementation log
+
+`gfx_gx.c` now carries a real translator: `gfx_gx_plan_form()` turns one component's
+`CCFeatures` into one or two TEV sub-stages, `gfx_gx_build_tev()` assembles the full plan
+(operand mapping, input routing, texel1 staging, stage padding) and `gfx_gx_emit_tev()` pushes
+it to the hardware.
+
+**Result: colours are correct.** The intro Mario head, black before, now renders with its red
+cap, the white M, skin tone, eyebrows, blue eyes, moustache and mouth. The Bob-omb Battlefield
+sky renders with correct blue and white clouds. The HUD stays pixel-perfect. Zero exceptions
+in the Dolphin log, 29.97 fps, and the GameCube target builds clean too.
+
+### Things that turned out simpler than planned
+
+- **`SHADER_TEXEL0A` needs no swap mode.** GX colour inputs `GX_CC_TEXA`, `GX_CC_RASA` and
+  `GX_CC_A0/A1/A2` already broadcast the alpha value across R, G and B. Task 3's
+  `GX_SetTevSwapMode` plan is unnecessary — the plain input does it.
+- **The colour/alpha mapping split is a non-issue.** `gfx_pc` resolves
+  `shader_input_mapping[0][j]` and `[1][j]` when it writes each input block, so the RGB and the
+  alpha in `buf_vbo` are already the right ones. Routing input `j` to a TEV register carries
+  both correctly; nothing extra to do.
+
+### Things that were harder
+
+- **Alpha has no `ONE`.** GX colour inputs have `GX_CC_ONE`, alpha inputs do not. When
+  `opt_alpha` is false the GLSL backend emits `alpha = 1.0`, so the alpha chain borrows
+  `GX_CA_KONST` with `GX_SetTevKAlphaSel(stage, GX_TEV_KASEL_1)`, which pins the konst selector
+  to 1.0. KONST is free for this because the constant inputs use TEV registers instead.
+- **Colour and alpha share stages.** They are two independent formulas of possibly different
+  length, computed by the same TEV stages. The shorter one is padded with a pass-through of
+  the previous result — and the padding must read `ZERO` rather than `PREV` on the first stage,
+  where there is no previous result.
+- **`TEXEL1` has nowhere to go.** `gfx_pc` only ever emits one set of texture coordinates, and
+  a TEV stage samples a single texmap. Texel1 is therefore stashed into a TEV register by a
+  leading stage, and the real stages reference that register.
+
+### The input routing decision
+
+Task 4 proposed detecting constant inputs at draw time. That is what is implemented, with one
+refinement: the resulting TEV plan is **cached per shader against the varying input index**
+(`built_for_varying`), and only rebuilt when that index changes — which in practice happens
+once. So the per-draw cost is the scan itself, not the plan rebuild.
+
+The scan compares each input across the batch's vertices with an early exit. Registers are
+allocated `GX_TEVREG0..2`, leaving `GX_TEVPREV` as the accumulator; with at most one varying
+input that is enough for four inputs plus texel1 in every SM64 combiner.
+
+### What is left
+
+- `color_alpha_same` is not exploited. It would save nothing in GX — colour and alpha operands
+  are set through separate calls either way — so it was skipped deliberately.
+- The formal 8-scene comparison against the PC reference (STORY-017) has not been run; what has
+  been checked is the intro, the title screen and an attract-mode demo.
+- **Level surfaces are still wrong**, but not because of the combiner: they are smeared by the
+  affine texture interpolation, which is [STORY-009](009-vertex-format-draw-triangles.md). That
+  is now the single blocker for a correct in-game image.

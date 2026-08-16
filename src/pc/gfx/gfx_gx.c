@@ -44,11 +44,37 @@
 // and looks exactly like "nothing draws at all".
 #define GFX_GX_TEXTURES_IMPLEMENTED 1
 
+// Worst case is: one stage to stash texel1, two for the general colour form,
+// and the alpha form padded to match. Eight leaves room for STORY-010.
+#define MAX_TEV_STAGES 8
+
+// GX has three colour/output registers usable as TEV inputs beside TEVPREV,
+// which we keep as the accumulator.
+#define NUM_TEV_REGS 3
+
+struct TevStage {
+    u8 tex_coord, tex_map;
+    u8 col_a, col_b, col_c, col_d;   // GX_CC_*
+    u8 alp_a, alp_b, alp_c, alp_d;   // GX_CA_*
+    u8 col_op, alp_op;               // GX_TEV_ADD / GX_TEV_SUB
+    u8 col_clamp, alp_clamp;
+    u8 out_reg;                      // GX_TEVPREV, or a register when stashing
+    bool alpha_konst_one;            // force alpha to 1.0 through KONST
+};
+
 struct ShaderProgram {
     uint32_t shader_id;
     struct CCFeatures cc;
     uint8_t num_floats;   // per vertex, as laid out by gfx_sp_tri1 in gfx_pc.c
     bool used_textures[2];
+
+    // TEV plan. Rebuilt only when the set of per-vertex inputs changes, which
+    // in practice means once: see gfx_gx_build_tev.
+    struct TevStage stages[MAX_TEV_STAGES];
+    uint8_t num_stages;
+    int8_t built_for_varying;   // input index routed to the rasteriser, -1 none
+    int8_t input_reg[4];        // TEV register holding each input, -1 = rasterised
+    int8_t texel1_reg;          // register holding texel1, -1 = unused
 };
 
 static struct ShaderProgram shader_program_pool[MAX_SHADER_PROGRAMS];
@@ -90,30 +116,259 @@ static void gfx_gx_unload_shader(struct ShaderProgram *old_prg) {
     (void) old_prg;
 }
 
+// The N64 combiner computes  out = (a - b) * c + d.
+// A TEV stage computes       out = d (+/-) ((1 - c) * a + c * b),
+// i.e. a linear interpolation, not the same shape. gfx_cc already classifies
+// each formula, which maps onto TEV as follows:
+//
+//   do_single    out = D              -> TEV(0, 0, 0, D)              1 stage
+//   do_multiply  out = A*C            -> TEV(0, A, C, 0)              1 stage
+//   do_mix       out = lerp(B, A, C)  -> TEV(B, A, C, 0)              1 stage
+//   general      out = (A-B)*C + D    -> TEV(0, A, C, D)   unclamped
+//                                       TEV(0, B, C, PREV) subtract   2 stages
+//
+// Nearly every SM64 combiner lands in the first three cases. The general case
+// must leave stage 1 unclamped: D + C*A can legitimately exceed 1 before stage 2
+// subtracts C*B, and TEV registers are wide enough to hold the overshoot.
+
+static u8 gfx_gx_reg_colour(int reg) {
+    static const u8 tbl[NUM_TEV_REGS] = { GX_CC_C0, GX_CC_C1, GX_CC_C2 };
+    return tbl[reg];
+}
+
+static u8 gfx_gx_reg_alpha_as_colour(int reg) {
+    // GX broadcasts a register's alpha across RGB when used as a colour input.
+    static const u8 tbl[NUM_TEV_REGS] = { GX_CC_A0, GX_CC_A1, GX_CC_A2 };
+    return tbl[reg];
+}
+
+static u8 gfx_gx_reg_alpha(int reg) {
+    static const u8 tbl[NUM_TEV_REGS] = { GX_CA_A0, GX_CA_A1, GX_CA_A2 };
+    return tbl[reg];
+}
+
+static u8 gfx_gx_tev_reg_id(int reg) {
+    static const u8 tbl[NUM_TEV_REGS] = { GX_TEVREG0, GX_TEVREG1, GX_TEVREG2 };
+    return tbl[reg];
+}
+
+// SHADER_* operand -> GX colour input.
+static u8 gfx_gx_item_to_colour(const struct ShaderProgram *prg, uint8_t item) {
+    switch (item) {
+        case SHADER_0:       return GX_CC_ZERO;
+        case SHADER_TEXEL0:  return GX_CC_TEXC;
+        // Texture alpha used as a colour. GX_CC_TEXA already replicates alpha
+        // across RGB, so no swap table is needed.
+        case SHADER_TEXEL0A: return GX_CC_TEXA;
+        case SHADER_TEXEL1:
+            return prg->texel1_reg >= 0 ? gfx_gx_reg_colour(prg->texel1_reg) : GX_CC_TEXC;
+        default: {
+            const int idx = item - SHADER_INPUT_1;
+            if (idx < 0 || idx > 3) return GX_CC_ZERO;
+            const int reg = prg->input_reg[idx];
+            return reg < 0 ? GX_CC_RASC : gfx_gx_reg_colour(reg);
+        }
+    }
+}
+
+// SHADER_* operand -> GX alpha input.
+static u8 gfx_gx_item_to_alpha(const struct ShaderProgram *prg, uint8_t item) {
+    switch (item) {
+        case SHADER_0:       return GX_CA_ZERO;
+        case SHADER_TEXEL0:
+        case SHADER_TEXEL0A: return GX_CA_TEXA;
+        case SHADER_TEXEL1:
+            return prg->texel1_reg >= 0 ? gfx_gx_reg_alpha(prg->texel1_reg) : GX_CA_TEXA;
+        default: {
+            const int idx = item - SHADER_INPUT_1;
+            if (idx < 0 || idx > 3) return GX_CA_ZERO;
+            const int reg = prg->input_reg[idx];
+            return reg < 0 ? GX_CA_RASA : gfx_gx_reg_alpha(reg);
+        }
+    }
+}
+
+// One component's (colour or alpha) formula, expressed as up to two TEV stages
+// of operand indices into cc->c[comp][].
+struct TevForm {
+    uint8_t a[2], b[2], c[2], d[2];  // per sub-stage, SHADER_* items
+    bool use_prev_d[2];              // stage's d operand is the previous result
+    u8 op[2];
+    bool clamp[2];
+    int count;
+};
+
+static void gfx_gx_plan_form(const struct CCFeatures *cc, int comp, struct TevForm *f) {
+    const uint8_t *v = cc->c[comp];
+    const uint8_t A = v[0], B = v[1], C = v[2], D = v[3];
+
+    f->op[0] = f->op[1] = GX_TEV_ADD;
+    f->clamp[0] = f->clamp[1] = true;
+    f->use_prev_d[0] = f->use_prev_d[1] = false;
+
+    if (cc->do_single[comp]) {
+        f->a[0] = SHADER_0; f->b[0] = SHADER_0; f->c[0] = SHADER_0; f->d[0] = D;
+        f->count = 1;
+    } else if (cc->do_multiply[comp]) {
+        f->a[0] = SHADER_0; f->b[0] = A; f->c[0] = C; f->d[0] = SHADER_0;
+        f->count = 1;
+    } else if (cc->do_mix[comp]) {
+        f->a[0] = B; f->b[0] = A; f->c[0] = C; f->d[0] = SHADER_0;
+        f->count = 1;
+    } else {
+        f->a[0] = SHADER_0; f->b[0] = A; f->c[0] = C; f->d[0] = D;
+        f->clamp[0] = false;            // D + C*A may exceed 1 legitimately
+        f->a[1] = SHADER_0; f->b[1] = B; f->c[1] = C; f->d[1] = SHADER_0;
+        f->use_prev_d[1] = true;
+        f->op[1] = GX_TEV_SUB;
+        f->count = 2;
+    }
+}
+
+// Builds the whole TEV plan for a shader, given which combiner input (if any)
+// is fed per vertex through the rasteriser.
+static void gfx_gx_build_tev(struct ShaderProgram *prg, int varying_input) {
+    const struct CCFeatures *cc = &prg->cc;
+    const bool use_tex0 = cc->used_textures[0] && GFX_GX_TEXTURES_IMPLEMENTED;
+    const bool use_tex1 = cc->used_textures[1] && GFX_GX_TEXTURES_IMPLEMENTED;
+
+    prg->built_for_varying = (int8_t) varying_input;
+    prg->texel1_reg = -1;
+
+    // Assign a TEV register to every input except the one that varies per
+    // vertex. Only CC_SHADE actually varies in SM64, so one rasterised channel
+    // is enough.
+    int next_reg = 0;
+    for (int i = 0; i < 4; i++) {
+        if (i >= cc->num_inputs) {
+            prg->input_reg[i] = -1;
+        } else if (i == varying_input) {
+            prg->input_reg[i] = -1;
+        } else if (next_reg < NUM_TEV_REGS) {
+            prg->input_reg[i] = (int8_t) next_reg++;
+        } else {
+            // More constants than registers. Not reachable with SM64's
+            // combiners; fall back to the rasterised colour rather than
+            // indexing past the register file.
+            prg->input_reg[i] = -1;
+        }
+    }
+
+    int stage = 0;
+
+    // Texel1 has no dedicated texture coordinate set (gfx_pc only ever emits
+    // one) and a TEV stage can sample a single texmap, so stash it in a
+    // register first and refer to that from the real stages.
+    if (use_tex1 && next_reg < NUM_TEV_REGS) {
+        prg->texel1_reg = (int8_t) next_reg++;
+        struct TevStage *s = &prg->stages[stage++];
+        s->tex_coord = GX_TEXCOORD0;
+        s->tex_map = GX_TEXMAP1;
+        s->col_a = GX_CC_ZERO; s->col_b = GX_CC_ZERO; s->col_c = GX_CC_ZERO; s->col_d = GX_CC_TEXC;
+        s->alp_a = GX_CA_ZERO; s->alp_b = GX_CA_ZERO; s->alp_c = GX_CA_ZERO; s->alp_d = GX_CA_TEXA;
+        s->col_op = s->alp_op = GX_TEV_ADD;
+        s->col_clamp = s->alp_clamp = GX_TRUE;
+        s->out_reg = gfx_gx_tev_reg_id(prg->texel1_reg);
+        s->alpha_konst_one = false;
+    }
+
+    struct TevForm col, alp;
+    gfx_gx_plan_form(cc, 0, &col);
+    gfx_gx_plan_form(cc, 1, &alp);
+
+    // Colour and alpha share the same stages, so the shorter form is padded
+    // with a pass-through of the previous result.
+    const int n = (col.count > alp.count) ? col.count : alp.count;
+    const int first = stage;
+
+    for (int i = 0; i < n && stage < MAX_TEV_STAGES; i++, stage++) {
+        struct TevStage *s = &prg->stages[stage];
+
+        s->tex_coord = use_tex0 ? GX_TEXCOORD0 : GX_TEXCOORDNULL;
+        s->tex_map = use_tex0 ? GX_TEXMAP0 : GX_TEXMAP_NULL;
+        s->out_reg = GX_TEVPREV;
+        s->alpha_konst_one = false;
+
+        if (i < col.count) {
+            s->col_a = gfx_gx_item_to_colour(prg, col.a[i]);
+            s->col_b = gfx_gx_item_to_colour(prg, col.b[i]);
+            s->col_c = gfx_gx_item_to_colour(prg, col.c[i]);
+            s->col_d = col.use_prev_d[i] ? GX_CC_CPREV : gfx_gx_item_to_colour(prg, col.d[i]);
+            s->col_op = col.op[i];
+            s->col_clamp = col.clamp[i] ? GX_TRUE : GX_FALSE;
+        } else {
+            s->col_a = GX_CC_ZERO; s->col_b = GX_CC_ZERO; s->col_c = GX_CC_ZERO;
+            s->col_d = (stage == first) ? GX_CC_ZERO : GX_CC_CPREV;
+            s->col_op = GX_TEV_ADD;
+            s->col_clamp = GX_TRUE;
+        }
+
+        if (!cc->opt_alpha) {
+            // The GLSL backend emits alpha = 1.0 when the combiner has no alpha
+            // channel. GX alpha inputs have no ONE, so borrow KONST, whose
+            // selector can be pinned to 1.0.
+            s->alp_a = GX_CA_ZERO; s->alp_b = GX_CA_ZERO; s->alp_c = GX_CA_ZERO;
+            s->alp_d = GX_CA_KONST;
+            s->alp_op = GX_TEV_ADD;
+            s->alp_clamp = GX_TRUE;
+            s->alpha_konst_one = true;
+        } else if (i < alp.count) {
+            s->alp_a = gfx_gx_item_to_alpha(prg, alp.a[i]);
+            s->alp_b = gfx_gx_item_to_alpha(prg, alp.b[i]);
+            s->alp_c = gfx_gx_item_to_alpha(prg, alp.c[i]);
+            s->alp_d = alp.use_prev_d[i] ? GX_CA_APREV : gfx_gx_item_to_alpha(prg, alp.d[i]);
+            s->alp_op = alp.op[i];
+            s->alp_clamp = alp.clamp[i] ? GX_TRUE : GX_FALSE;
+        } else {
+            s->alp_a = GX_CA_ZERO; s->alp_b = GX_CA_ZERO; s->alp_c = GX_CA_ZERO;
+            s->alp_d = (stage == first) ? GX_CA_ZERO : GX_CA_APREV;
+            s->alp_op = GX_TEV_ADD;
+            s->alp_clamp = GX_TRUE;
+        }
+    }
+
+    prg->num_stages = (uint8_t) stage;
+}
+
+static void gfx_gx_emit_tev(const struct ShaderProgram *prg) {
+    const bool use_tex = (prg->cc.used_textures[0] || prg->cc.used_textures[1])
+                         && GFX_GX_TEXTURES_IMPLEMENTED;
+
+    if (use_tex) {
+        GX_SetNumTexGens(1);
+        GX_SetTexCoordGen(GX_TEXCOORD0, GX_TG_MTX2x4, GX_TG_TEX0, GX_IDENTITY);
+    } else {
+        GX_SetNumTexGens(0);
+    }
+
+    for (int i = 0; i < prg->num_stages; i++) {
+        const struct TevStage *s = &prg->stages[i];
+        const u8 st = GX_TEVSTAGE0 + i;
+
+        // Stages that use no texture must be given the null coordinate and null
+        // map, or they sample whatever is left in texture memory.
+        GX_SetTevOrder(st, s->tex_coord, s->tex_map, GX_COLOR0A0);
+
+        GX_SetTevColorIn(st, s->col_a, s->col_b, s->col_c, s->col_d);
+        GX_SetTevColorOp(st, s->col_op, GX_TB_ZERO, GX_CS_SCALE_1, s->col_clamp, s->out_reg);
+
+        GX_SetTevAlphaIn(st, s->alp_a, s->alp_b, s->alp_c, s->alp_d);
+        GX_SetTevAlphaOp(st, s->alp_op, GX_TB_ZERO, GX_CS_SCALE_1, s->alp_clamp, s->out_reg);
+
+        if (s->alpha_konst_one) {
+            GX_SetTevKAlphaSel(st, GX_TEV_KASEL_1);
+        }
+    }
+
+    GX_SetNumTevStages(prg->num_stages ? prg->num_stages : 1);
+}
+
 static void gfx_gx_load_shader(struct ShaderProgram *new_prg) {
     if (new_prg == cur_shader) {
         return;
     }
     cur_shader = new_prg;
-
-    const struct CCFeatures *cc = &new_prg->cc;
-    const bool use_tex = (cc->used_textures[0] || cc->used_textures[1])
-                         && GFX_GX_TEXTURES_IMPLEMENTED;
-
-    // PROVISIONAL. Faithfully translating the N64 colour combiner into TEV
-    // stages is STORY-007; until then every shader gets the one configuration
-    // that is right most of the time: texel modulated by the vertex colour.
-    if (use_tex) {
-        GX_SetNumTexGens(1);
-        GX_SetTexCoordGen(GX_TEXCOORD0, GX_TG_MTX2x4, GX_TG_TEX0, GX_IDENTITY);
-        GX_SetTevOrder(GX_TEVSTAGE0, GX_TEXCOORD0, GX_TEXMAP0, GX_COLOR0A0);
-        GX_SetTevOp(GX_TEVSTAGE0, GX_MODULATE);
-    } else {
-        GX_SetNumTexGens(0);
-        GX_SetTevOrder(GX_TEVSTAGE0, GX_TEXCOORDNULL, GX_TEXMAP_NULL, GX_COLOR0A0);
-        GX_SetTevOp(GX_TEVSTAGE0, GX_PASSCLR);
-    }
-    GX_SetNumTevStages(1);
+    gfx_gx_emit_tev(new_prg);
 }
 
 static struct ShaderProgram *gfx_gx_create_and_load_new_shader(uint32_t shader_id) {
@@ -134,6 +389,11 @@ static struct ShaderProgram *gfx_gx_create_and_load_new_shader(uint32_t shader_i
                     + (cc.opt_fog ? 4 : 0)
                     + cc.num_inputs * (cc.opt_alpha ? 4 : 3);
 
+    // Input 1 is the per-vertex one for almost every SM64 combiner; the first
+    // draw call corrects this if it turns out otherwise.
+    gfx_gx_build_tev(prg, cc.num_inputs > 0 ? 0 : -1);
+
+    cur_shader = NULL;   // force the emit below
     gfx_gx_load_shader(prg);
     return prg;
 }
@@ -352,6 +612,41 @@ static void gfx_gx_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t bu
     const size_t tex_off = 4;
     const size_t input_off = 4 + (tex_in_buffer ? 2 : 0) + (cc->opt_fog ? 4 : 0);
     const bool has_input = cc->num_inputs > 0;
+    const size_t input_size = cc->opt_alpha ? 4 : 3;
+    const size_t num_verts = buf_vbo_num_tris * 3;
+
+    // Which combiner input actually varies across the batch? Only CC_SHADE does
+    // in practice; PRIM, ENV and LOD are constant for the whole draw. The
+    // varying one goes through the rasteriser, the constants into TEV registers,
+    // because GX only has two per-vertex colour channels against four inputs.
+    int varying = -1;
+    for (int j = 0; j < cc->num_inputs && varying < 0; j++) {
+        const float *ref = buf_vbo + input_off + j * input_size;
+        for (size_t i = 1; i < num_verts; i++) {
+            const float *cur = buf_vbo + i * stride + input_off + j * input_size;
+            if (memcmp(ref, cur, input_size * sizeof(float)) != 0) {
+                varying = j;
+                break;
+            }
+        }
+    }
+
+    if (cur_shader->built_for_varying != varying) {
+        gfx_gx_build_tev(cur_shader, varying);
+        gfx_gx_emit_tev(cur_shader);
+    }
+
+    // Constant inputs are read once, from the first vertex.
+    for (int j = 0; j < cc->num_inputs; j++) {
+        const int reg = cur_shader->input_reg[j];
+        if (reg < 0) {
+            continue;
+        }
+        const float *c = buf_vbo + input_off + j * input_size;
+        GXColor col = { float_to_u8(c[0]), float_to_u8(c[1]), float_to_u8(c[2]),
+                        cc->opt_alpha ? float_to_u8(c[3]) : 255 };
+        GX_SetTevColor(gfx_gx_tev_reg_id(reg), col);
+    }
 
     GX_ClearVtxDesc();
     GX_SetVtxDesc(GX_VA_POS, GX_DIRECT);
@@ -363,10 +658,16 @@ static void gfx_gx_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t bu
         GX_SetVtxAttrFmt(GX_VTXFMT0, GX_VA_TEX0, GX_TEX_ST, GX_F32, 0);
     }
 
-    if (submit_tex) {
+    if (cc->used_textures[0] && GFX_GX_TEXTURES_IMPLEMENTED) {
         struct GXTexture *t0 = &texture_pool[cur_tex_id[0]];
         if (t0->obj_valid) {
             GX_LoadTexObj(&t0->obj, GX_TEXMAP0);
+        }
+    }
+    if (cc->used_textures[1] && GFX_GX_TEXTURES_IMPLEMENTED) {
+        struct GXTexture *t1 = &texture_pool[cur_tex_id[1]];
+        if (t1->obj_valid) {
+            GX_LoadTexObj(&t1->obj, GX_TEXMAP1);
         }
     }
 
@@ -396,8 +697,8 @@ static void gfx_gx_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t bu
             GX_Color4u8((u8) (h >> 24), (u8) (h >> 16), (u8) (h >> 8), 255);
         }
 #else
-        if (has_input) {
-            const float *c = v + input_off;
+        if (has_input && varying >= 0) {
+            const float *c = v + input_off + varying * input_size;
             GX_Color4u8(float_to_u8(c[0]), float_to_u8(c[1]), float_to_u8(c[2]),
                         cc->opt_alpha ? float_to_u8(c[3]) : 255);
         } else {
