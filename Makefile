@@ -1022,11 +1022,26 @@ $(GLOBAL_ASM_DEP).$(NON_MATCHING):
 #==============================================================================#
 
 # Compile C/C++ code
-$(BUILD_DIR)/%.o: %.cpp
+# Recompile when the flags change, not only when the sources do.
+#
+# Without this, `make EXTRA_CFLAGS=-DSOMETHING` reuses objects built with
+# different flags and reports success. That turns an A/B test into a comparison
+# of a build against itself, silently -- it has produced two wrong conclusions
+# in this project, one of them after a `.dol` had already been handed over for
+# testing on hardware.
+#
+# The stamp is rewritten only when the flags actually differ, so a normal
+# incremental build is untouched.
+BUILD_FLAGS_STAMP := $(BUILD_DIR)/.cflags
+$(shell mkdir -p $(BUILD_DIR) 2>/dev/null; \
+        printf '%s' '$(CFLAGS)' | cmp -s - $(BUILD_FLAGS_STAMP) 2>/dev/null \
+        || printf '%s' '$(CFLAGS)' > $(BUILD_FLAGS_STAMP))
+
+$(BUILD_DIR)/%.o: %.cpp $(BUILD_FLAGS_STAMP)
 	$(call print,Compiling:,$<,$@)
 	@$(CXX) -fsyntax-only $(CFLAGS) -MMD -MP -MT $@ -MF $(BUILD_DIR)/$*.d $<
 	$(V)$(CXX) -c $(CFLAGS) -o $@ $<
-$(BUILD_DIR)/%.o: %.c
+$(BUILD_DIR)/%.o: %.c $(BUILD_FLAGS_STAMP)
 	$(call print,Compiling:,$<,$@)
 	@$(CC_CHECK) $(CC_CHECK_CFLAGS) -MMD -MP -MT $@ -MF $(BUILD_DIR)/$*.d $<
 	$(V)$(CC) -c $(CFLAGS) -o $@ $<

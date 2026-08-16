@@ -27,6 +27,27 @@ Intermittent, never fatal, and present on both Dolphin and hardware.
 
 So the textures we upload are correct, they are bound, and their objects are valid.
 
+## Sharpened by hardware: it happens at the screen edge
+
+**"When I stand in certain corners and an edge reaches the very edge of the screen, I get small
+texture bugs."** Reported on a real GameCube, reproducible on demand.
+
+That is a much narrower statement than "with camera movement", and it points at **clipping**
+rather than at the projection fit alone: the trigger is a polygon being cut by the frustum
+boundary, not the camera moving as such. A corner is where a wall polygon is simultaneously
+very close, very large in screen terms, and cut on at least one side.
+
+Two candidates fit it, and they are distinguishable in one run:
+
+1. **No texture is bound.** The surface would render as the white fallback, and the capture
+   does show a large flat pale wedge. `-DGFX_GX_DEBUG_TEXFAIL` turns that fallback magenta.
+2. **The texture coordinates are unusable.** A polygon that large and that close carries very
+   large `u`/`v`, and the GP's texture coordinate path is fixed point: past a certain magnitude
+   the precision collapses. Clipping generates new vertices by interpolating those coordinates,
+   which is where an already-marginal value tips over.
+
+The first is one build away from an answer, so it goes first.
+
 ## The remaining lead
 
 The per-batch projection fit in `gfx_gx_setup_perspective`. A large near-flat quad is its
