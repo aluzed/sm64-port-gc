@@ -7,6 +7,14 @@
 #include <emscripten.h>
 #endif
 
+#ifdef TARGET_OGC
+// No libogc header here on purpose: <ogc/lwp_watchdog.h> reaches ogcsys.h,
+// which pulls ogc/gx.h and ogc/gu.h, whose Vtx and Mtx clash with the ones
+// PR/gbi.h declares through ultra64.h above. gfx_ogc.h is libogc-free and
+// exposes the Time Base through a real (non-inline) function.
+#include "gfx/gfx_ogc.h"
+#endif
+
 extern OSMgrArgs piMgrArgs;
 
 u64 osClockRate = 62500000;
@@ -75,7 +83,13 @@ void osViSwapBuffer(UNUSED void *vaddr) {
 }
 
 OSTime osGetTime(void) {
+#ifdef TARGET_OGC
+    // Time Base Register, monotonic since boot. Beats the stock `return 0`,
+    // though the tick rate is the console's, not the N64's osClockRate.
+    return (OSTime) gfx_ogc_get_ticks();
+#else
     return 0;
+#endif
 }
 
 void osWritebackDCacheAll(void) {

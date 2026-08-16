@@ -19,6 +19,33 @@ DEFINES :=
 TARGET_N64 ?= 0
 # Build for Emscripten/WebGL
 TARGET_WEB ?= 0
+# Build for Nintendo GameCube (devkitPPC + libogc)
+TARGET_GC ?= 0
+$(eval $(call validate-option,TARGET_GC,0 1))
+# Build for Nintendo Wii (devkitPPC + libogc)
+TARGET_WII ?= 0
+$(eval $(call validate-option,TARGET_WII,0 1))
+
+# TARGET_OGC covers everything the two PowerPC consoles have in common: the
+# devkitPPC toolchain, libogc, and the GX/AI/PAD backends. Platform-specific
+# bits still key off TARGET_GC or TARGET_WII individually.
+ifeq ($(TARGET_GC)$(TARGET_WII),11)
+  $(error Cannot target GameCube and Wii at the same time; pick either TARGET_GC=1 or TARGET_WII=1)
+else ifeq ($(TARGET_GC)$(TARGET_WII),00)
+  TARGET_OGC := 0
+else
+  TARGET_OGC := 1
+endif
+
+ifeq ($(TARGET_OGC),1)
+  ifeq ($(TARGET_N64),1)
+    $(error TARGET_GC/TARGET_WII cannot be combined with TARGET_N64)
+  endif
+  ifeq ($(TARGET_WEB),1)
+    $(error TARGET_GC/TARGET_WII cannot be combined with TARGET_WEB)
+  endif
+endif
+
 # Compiler to use (ido or gcc)
 
 
@@ -36,7 +63,10 @@ ifeq ($(TARGET_N64),0)
   NON_MATCHING := 1
   GRUCODE := f3dex2e
   TARGET_WINDOWS := 0
-  ifeq ($(TARGET_WEB),0)
+  # Only fall back to host-OS detection when no console/web target was requested.
+  # Without the TARGET_OGC guard, cross-compiling from Windows would silently
+  # turn itself into a native Windows build.
+  ifeq ($(TARGET_WEB)$(TARGET_OGC),00)
     ifeq ($(OS),Windows_NT)
       TARGET_WINDOWS := 1
     else
@@ -45,7 +75,15 @@ ifeq ($(TARGET_N64),0)
     endif
   endif
 
-  ifeq ($(TARGET_WINDOWS),1)
+  ifeq ($(TARGET_OGC),1)
+    # The console renderer is GX; none of the PC graphics backends apply.
+    # ENABLE_GFX_DUMMY=1 swaps it for the do-nothing renderer, which still
+    # brings up video and runs the game logic, audio and controllers. Handy for
+    # telling "the renderer is wrong" apart from "the port is wedged".
+    ifneq ($(ENABLE_GFX_DUMMY),1)
+      ENABLE_GX := 1
+    endif
+  else ifeq ($(TARGET_WINDOWS),1)
     # On Windows, default to DirectX 11
     ifneq ($(ENABLE_OPENGL),1)
       ifneq ($(ENABLE_DX12),1)
@@ -214,6 +252,11 @@ ifeq ($(filter clean distclean,$(MAKECMDGOALS)),)
   $(info Version:        $(VERSION))
   $(info Microcode:      $(GRUCODE))
   $(info Target:         $(TARGET))
+  ifeq ($(TARGET_WII),1)
+    $(info Platform:       Nintendo Wii (devkitPPC))
+  else ifeq ($(TARGET_GC),1)
+    $(info Platform:       Nintendo GameCube (devkitPPC))
+  endif
   ifeq ($(COMPARE),1)
     $(info Compare ROM:    yes)
   else
@@ -272,6 +315,10 @@ ifeq ($(TARGET_N64),1)
   BUILD_DIR := $(BUILD_DIR_BASE)/$(VERSION)
 else ifeq ($(TARGET_WEB),1)
   BUILD_DIR := $(BUILD_DIR_BASE)/$(VERSION)_web
+else ifeq ($(TARGET_WII),1)
+  BUILD_DIR := $(BUILD_DIR_BASE)/$(VERSION)_wii
+else ifeq ($(TARGET_GC),1)
+  BUILD_DIR := $(BUILD_DIR_BASE)/$(VERSION)_gc
 else
   BUILD_DIR := $(BUILD_DIR_BASE)/$(VERSION)_pc
 endif
@@ -280,11 +327,15 @@ ifeq ($(TARGET_WEB),1)
   EXE := $(BUILD_DIR)/$(TARGET).html
 else ifeq ($(TARGET_WINDOWS),1)
   EXE := $(BUILD_DIR)/$(TARGET).exe
+else ifeq ($(TARGET_OGC),1)
+  # The linker produces an ELF; elf2dol then turns it into the bootable image.
+  EXE := $(BUILD_DIR)/$(TARGET).elf
 else
   EXE := $(BUILD_DIR)/$(TARGET)
 endif
 ROM            := $(BUILD_DIR)/$(TARGET).z64
 ELF            := $(BUILD_DIR)/$(TARGET).elf
+DOL            := $(BUILD_DIR)/$(TARGET).dol
 LIBULTRA       := $(BUILD_DIR)/libultra.a
 LD_SCRIPT      := sm64.ld
 MIO0_DIR       := $(BUILD_DIR)/bin
@@ -337,6 +388,35 @@ ifneq ($(TARGET_N64),1)
 
   C_FILES := $(filter-out src/game/main.c,$(C_FILES))
   ULTRA_C_FILES := $(addprefix lib/src/,$(ULTRA_C_FILES))
+endif
+
+ifeq ($(TARGET_OGC),1)
+  # src/pc is picked up with a wildcard, so the PC-only backends have to be
+  # filtered out explicitly. Filtering here instead of adding #ifdefs to the
+  # files keeps the upstream sources untouched and rebases cheap.
+  #
+  # dlmalloc.c is dropped as well: without USE_DL_PREFIX it *replaces* malloc,
+  # which would fight libogc/newlib over the system arena. Ports already build
+  # with USE_SYSTEM_MALLOC, so newlib's allocator is the right one here.
+  PC_ONLY_C_FILES := \
+    src/pc/dlmalloc.c \
+    src/pc/gfx/gfx_opengl.c \
+    src/pc/gfx/gfx_sdl2.c \
+    src/pc/gfx/gfx_glx.c \
+    src/pc/audio/audio_alsa.c \
+    src/pc/audio/audio_pulse.c \
+    src/pc/audio/audio_sdl.c \
+    src/pc/controller/controller_sdl.c \
+    src/pc/controller/controller_xinput.c \
+    src/pc/controller/controller_keyboard.c \
+    src/pc/controller/controller_emscripten_keyboard.c \
+    src/pc/controller/controller_wup.c \
+    src/pc/controller/wup.c
+
+  C_FILES := $(filter-out $(PC_ONLY_C_FILES),$(C_FILES))
+  # Every remaining .cpp is a Direct3D backend. Dropping them all lets us link
+  # with the C compiler and keeps libstdc++ out of the binary.
+  CXX_FILES :=
 endif
 
 # Sound files
@@ -456,6 +536,55 @@ export LANG := C
 
 else # TARGET_N64
 
+ifeq ($(TARGET_OGC),1)
+
+# ---- devkitPPC cross toolchain (GameCube / Wii) ----------------------------
+# DEVKITPRO and DEVKITPPC are provided by the devkitPro environment: its MSYS2
+# shell on Windows, /etc/profile.d/devkit-env.sh on Linux/macOS. Both can be
+# overridden on the command line.
+ifeq ($(strip $(DEVKITPRO)),)
+  $(error DEVKITPRO is not set. Install devkitPro (gamecube-dev / wii-dev) and build from its \
+environment, or pass DEVKITPRO=<path> on the command line)
+endif
+DEVKITPPC ?= $(DEVKITPRO)/devkitPPC
+ifeq ($(wildcard $(DEVKITPPC)/bin/*),)
+  $(error devkitPPC not found under $(DEVKITPPC). Install the gamecube-dev or wii-dev package, \
+or pass DEVKITPPC=<path>)
+endif
+
+PPC_PREFIX := $(DEVKITPPC)/bin/powerpc-eabi-
+CC      := $(PPC_PREFIX)gcc
+CXX     := $(PPC_PREFIX)g++
+AS      := $(PPC_PREFIX)as
+LD      := $(PPC_PREFIX)gcc
+OBJDUMP := $(PPC_PREFIX)objdump
+OBJCOPY := $(PPC_PREFIX)objcopy
+ELF2DOL := $(DEVKITPRO)/tools/bin/elf2dol
+PYTHON  := python3
+
+LIBOGC_INC := $(DEVKITPRO)/libogc/include
+ifeq ($(TARGET_WII),1)
+  # -mrvl selects the Wii (Revolution) machine profile
+  MACHDEP     := -mrvl -mcpu=750 -meabi -mhard-float
+  LIBOGC_LIB  := $(DEVKITPRO)/libogc/lib/wii
+  OGC_DEFINES := -DTARGET_WII
+  OGC_LIBS    := -lfat -lwiiuse -lbte -logc -lm
+else
+  # -mogc selects the GameCube (Dolphin) machine profile
+  MACHDEP     := -mogc -mcpu=750 -meabi -mhard-float
+  LIBOGC_LIB  := $(DEVKITPRO)/libogc/lib/cube
+  OGC_DEFINES := -DTARGET_GC
+  OGC_LIBS    := -lfat -logc -lm
+endif
+
+# -fsigned-char is NOT optional: char defaults to *unsigned* on PowerPC, and
+# SM64 relies on signed char/s8 semantics all over the place. Without it the
+# game builds cleanly and then misbehaves in ways that are very hard to trace.
+PLATFORM_CFLAGS  := $(MACHDEP) -DTARGET_OGC $(OGC_DEFINES) -DGEKKO -fsigned-char -I$(LIBOGC_INC)
+PLATFORM_LDFLAGS := $(MACHDEP) -L$(LIBOGC_LIB) $(OGC_LIBS) -Wl,-Map,$(BUILD_DIR)/$(TARGET).map
+
+else # TARGET_OGC
+
 AS := as
 ifneq ($(TARGET_WEB),1)
   CC := gcc
@@ -474,17 +603,19 @@ PYTHON := python3
 
 # Platform-specific compiler and linker flags
 ifeq ($(TARGET_WINDOWS),1)
-  PLATFORM_CFLAGS  := -DTARGET_WINDOWS
+  PLATFORM_CFLAGS  := -DTARGET_WINDOWS -march=native
   PLATFORM_LDFLAGS := -lm -lxinput9_1_0 -lole32 -no-pie -mwindows
 endif
 ifeq ($(TARGET_LINUX),1)
-  PLATFORM_CFLAGS  := -DTARGET_LINUX `pkg-config --cflags libusb-1.0`
+  PLATFORM_CFLAGS  := -DTARGET_LINUX -march=native `pkg-config --cflags libusb-1.0`
   PLATFORM_LDFLAGS := -lm -lpthread `pkg-config --libs libusb-1.0` -lasound -lpulse -no-pie
 endif
 ifeq ($(TARGET_WEB),1)
   PLATFORM_CFLAGS  := -DTARGET_WEB
   PLATFORM_LDFLAGS := -lm -no-pie -s TOTAL_MEMORY=20MB -g4 --source-map-base http://localhost:8080/ -s "EXTRA_EXPORTED_RUNTIME_METHODS=['callMain']"
 endif
+
+endif # TARGET_OGC
 
 PLATFORM_CFLAGS += -DNO_SEGMENTED_MEMORY -DUSE_SYSTEM_MALLOC
 
@@ -513,11 +644,17 @@ ifeq ($(ENABLE_DX12),1)
   GFX_CFLAGS := -DENABLE_DX12
   PLATFORM_LDFLAGS += -lgdi32 -static
 endif
+ifeq ($(ENABLE_GFX_DUMMY),1)
+  GFX_CFLAGS := -DENABLE_GFX_DUMMY
+endif
+ifeq ($(ENABLE_GX),1)
+  GFX_CFLAGS := -DENABLE_GX
+endif
 
 GFX_CFLAGS += -DWIDESCREEN
 
 CC_CHECK := $(CC) -fsyntax-only -fsigned-char -Wall -Wextra -Wno-format-security -D_LANGUAGE_C $(DEF_INC_CFLAGS) $(PLATFORM_CFLAGS) $(GFX_CFLAGS)
-CFLAGS := $(OPT_FLAGS) -D_LANGUAGE_C $(DEF_INC_CFLAGS) $(PLATFORM_CFLAGS) $(GFX_CFLAGS) -fno-strict-aliasing -fwrapv -march=native
+CFLAGS := $(OPT_FLAGS) -D_LANGUAGE_C $(DEF_INC_CFLAGS) $(PLATFORM_CFLAGS) $(GFX_CFLAGS) -fno-strict-aliasing -fwrapv
 
 ASFLAGS := -I include -I $(BUILD_DIR) $(foreach d,$(DEFINES),--defsym $(d))
 
@@ -531,6 +668,13 @@ ifneq (,$(call find-command,clang))
   CPPFLAGS := -E -P -x c -Wno-trigraphs $(DEF_INC_CFLAGS)
 else
   CPP      := cpp
+  CPPFLAGS := -P -Wno-trigraphs $(DEF_INC_CFLAGS)
+endif
+
+ifeq ($(TARGET_OGC),1)
+  # Use devkitPPC's preprocessor rather than the host's: it is guaranteed to be
+  # present alongside the cross compiler, and it removes a host dependency.
+  CPP      := $(PPC_PREFIX)cpp
   CPPFLAGS := -P -Wno-trigraphs $(DEF_INC_CFLAGS)
 endif
 
@@ -591,8 +735,20 @@ ifeq ($(COMPARE),1)
 	@$(PRINT) "$(GREEN)Checking if ROM matches.. $(NO_COL)\n"
 	@$(SHA1SUM) --quiet -c $(TARGET).sha1 && $(PRINT) "$(TARGET): $(GREEN)OK$(NO_COL)\n" || ($(PRINT) "$(YELLOW)Building the ROM file has succeeded, but does not match the original ROM.\nThis is expected, and not an error, if you are making modifications.\nTo silence this message, use 'make COMPARE=0.' $(NO_COL)\n" && false)
 endif
+else ifeq ($(TARGET_OGC),1)
+all: $(DOL)
 else
 all: $(EXE)
+endif
+
+ifeq ($(TARGET_OGC),1)
+# Fast iteration loop. Dolphin is more forgiving than real hardware (it hides
+# missing DCFlushRange calls, misaligned buffers and audio DMA underruns), so
+# milestones still have to be validated on a console -- see docs/stories/017.
+DOLPHIN ?= dolphin-emu
+run: $(DOL)
+	"$(DOLPHIN)" -b -e "$(abspath $(DOL))"
+.PHONY: run
 endif
 
 clean:
@@ -941,6 +1097,16 @@ $(BUILD_DIR)/$(TARGET).objdump: $(ELF)
 else
 $(EXE): $(O_FILES) $(MIO0_FILES:.mio0=.o) $(ULTRA_O_FILES) $(GODDARD_O_FILES)
 	$(LD) -L $(BUILD_DIR) -o $@ $(O_FILES) $(ULTRA_O_FILES) $(GODDARD_O_FILES) $(LDFLAGS)
+
+ifeq ($(TARGET_OGC),1)
+# Turn the linked ELF into a bootable GameCube/Wii image. elf2dol can exit 0
+# while writing nothing useful, so check the result rather than the exit code.
+$(DOL): $(EXE)
+	$(call print,Building DOL:,$<,$@)
+	$(V)$(ELF2DOL) $< $@
+	$(V)test -s $@ || (rm -f $@ && echo "elf2dol produced an empty $@" && false)
+	@$(PRINT) "$(GREEN)Built $@$(NO_COL)\n"
+endif
 endif
 
 

@@ -4,6 +4,10 @@
 #include "lib/src/osContInternal.h"
 
 #include "controller_recorded_tas.h"
+
+#ifdef TARGET_OGC
+#include "controller_ogc.h"
+#else
 #include "controller_keyboard.h"
 
 #if defined(_WIN32) || defined(_WIN64)
@@ -15,9 +19,13 @@
 #ifdef __linux__
 #include "controller_wup.h"
 #endif
+#endif // TARGET_OGC
 
 static struct ControllerAPI *controller_implementations[] = {
     &controller_recorded_tas,
+#ifdef TARGET_OGC
+    &controller_ogc,
+#else
 #if defined(_WIN32) || defined(_WIN64)
     &controller_xinput,
 #else
@@ -27,6 +35,7 @@ static struct ControllerAPI *controller_implementations[] = {
     &controller_wup,
 #endif
     &controller_keyboard,
+#endif // TARGET_OGC
 };
 
 s32 osContInit(UNUSED OSMesgQueue *mq, u8 *controllerBits, UNUSED OSContStatus *status) {

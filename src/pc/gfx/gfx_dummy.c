@@ -5,6 +5,12 @@
 #include "gfx_window_manager_api.h"
 #include "gfx_rendering_api.h"
 
+// The dummy *renderer* is useful on console (it is what lets the port boot and
+// run the game logic before the GX backend exists), but the dummy *window
+// manager* is not: its frame limiter relies on clock_nanosleep, which newlib
+// does not provide, and gfx_ogc_wm_api does the real video bring-up anyway.
+#ifndef TARGET_OGC
+
 static void gfx_dummy_wm_init(const char *game_name, bool start_in_fullscreen) {
 }
 
@@ -77,6 +83,8 @@ static void gfx_dummy_wm_swap_buffers_end(void) {
 static double gfx_dummy_wm_get_time(void) {
     return 0.0;
 }
+
+#endif // !TARGET_OGC
 
 static bool gfx_dummy_renderer_z_is_from_0_to_1(void) {
     return false;
@@ -151,6 +159,7 @@ static void gfx_dummy_renderer_end_frame(void) {
 static void gfx_dummy_renderer_finish_render(void) {
 }
 
+#ifndef TARGET_OGC
 struct GfxWindowManagerAPI gfx_dummy_wm_api = {
     gfx_dummy_wm_init,
     gfx_dummy_wm_set_keyboard_callbacks,
@@ -164,6 +173,7 @@ struct GfxWindowManagerAPI gfx_dummy_wm_api = {
     gfx_dummy_wm_swap_buffers_end,
     gfx_dummy_wm_get_time
 };
+#endif // !TARGET_OGC
 
 struct GfxRenderingAPI gfx_dummy_renderer_api = {
     gfx_dummy_renderer_z_is_from_0_to_1,

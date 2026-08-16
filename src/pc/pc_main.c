@@ -18,6 +18,8 @@
 #include "gfx/gfx_glx.h"
 #include "gfx/gfx_sdl.h"
 #include "gfx/gfx_dummy.h"
+#include "gfx/gfx_ogc.h"
+#include "gfx/gfx_gx.h"
 
 #include "audio/audio_api.h"
 #include "audio/audio_wasapi.h"
@@ -26,7 +28,9 @@
 #include "audio/audio_sdl.h"
 #include "audio/audio_null.h"
 
+#ifndef TARGET_OGC
 #include "controller/controller_keyboard.h"
+#endif
 
 #include "configfile.h"
 
@@ -171,16 +175,27 @@ void main_func(void) {
     #else
         wm_api = &gfx_sdl;
     #endif
+#elif defined(ENABLE_GX)
+    rendering_api = &gfx_gx_api;
+    wm_api = &gfx_ogc_wm_api;
 #elif defined(ENABLE_GFX_DUMMY)
     rendering_api = &gfx_dummy_renderer_api;
-    wm_api = &gfx_dummy_wm_api;
+    #ifdef TARGET_OGC
+        // The console still needs real video bring-up even with no renderer:
+        // that is what makes a dummy-renderer build boot to a visible screen.
+        wm_api = &gfx_ogc_wm_api;
+    #else
+        wm_api = &gfx_dummy_wm_api;
+    #endif
 #endif
 
     gfx_init(wm_api, rendering_api, "Super Mario 64 PC-Port", configFullscreen);
-    
+
     wm_api->set_fullscreen_changed_callback(on_fullscreen_changed);
+#ifndef TARGET_OGC
     wm_api->set_keyboard_callbacks(keyboard_on_key_down, keyboard_on_key_up, keyboard_on_all_keys_up);
-    
+#endif
+
 #if HAVE_WASAPI
     if (audio_api == NULL && audio_wasapi.init()) {
         audio_api = &audio_wasapi;
