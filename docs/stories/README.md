@@ -88,6 +88,7 @@ the game code**. That is the guiding rule for the whole roadmap.
 ### Open defects
 - [020 — Shadows flicker and drop out](020-shadow-decal-flicker.md) — found on hardware; the Z-decal bias is missing
 - [021 — Textures drop in and out with camera movement](021-texture-dropouts.md) — five causes ruled out by measurement; the projection fit is the remaining lead
+- [022 — Alignment exception entering the castle](022-alignment-traps-audit.md) 🟡 fixed, awaiting hardware confirmation; an audit for the same class follows
 
 ## Dependency graph
 
