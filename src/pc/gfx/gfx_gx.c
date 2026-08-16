@@ -47,6 +47,14 @@
 #define GFX_GX_TEXTURES_IMPLEMENTED 1
 #endif
 
+// Per-batch hardware perspective projection. Off: it fed the depth buffer a
+// different convention from the CPU path, so batches sorted against each other.
+// Reinstating it is STORY-009's job, and it is what perspective-correct texture
+// interpolation needs -- but the two paths have to agree on depth first.
+#ifndef GFX_GX_HW_PERSP
+#define GFX_GX_HW_PERSP 0
+#endif
+
 // Worst case is: one stage to stash texel1, two for the general colour form,
 // and the alpha form padded to match. Eight leaves room for STORY-010.
 #define MAX_TEV_STAGES 8
@@ -54,12 +62,6 @@
 // GX has three colour/output registers usable as TEV inputs beside TEVPREV,
 // which we keep as the accumulator.
 #define NUM_TEV_REGS 3
-
-// How far a ZMODE_DEC decal is pulled towards the viewer, in NDC. Stands in for
-// the N64's decal bias, which OpenGL emulates with glPolygonOffset. Small enough
-// not to punch a decal through geometry in front of it, large enough to clear
-// the depth quantisation on the surface it sits on.
-#define GFX_GX_DECAL_BIAS 0.0008f
 
 struct TevStage {
     u8 tex_coord, tex_map;
@@ -123,15 +125,8 @@ static void gfx_gx_apply_zmode(void) {
     GX_SetZMode(GX_FALSE, GX_ALWAYS, GX_FALSE);
     return;
 #endif
-    // A decal (Mario's shadow, the sclera/iris/pupil layers of his eyes,
-    // painting surfaces) must test against the surface it sits on but never
-    // write depth, otherwise it fights with it.
-    //
-    // Not writing is only half of it: the N64's ZMODE_DEC also biases the decal
-    // *towards the viewer*, which is what OpenGL emulates with glPolygonOffset.
-    // Without that bias a decal sitting a hair behind its host surface loses
-    // GX_LEQUAL and disappears -- the pupil ends up behind the white of the eye.
-    // The bias itself is applied per vertex in draw_triangles.
+    // A decal (Mario's shadow, footprints) must test against the surface it
+    // sits on but never write depth, otherwise it fights with it.
     if (gx_state.zmode_decal) {
         GX_SetZMode(GX_TRUE, GFX_GX_ZFUNC_NEARER, GX_FALSE);
         return;
@@ -139,19 +134,18 @@ static void gfx_gx_apply_zmode(void) {
 
     // The mask is gated on the test, because the two APIs disagree about what
     // "no depth test" means. With GL_DEPTH_TEST disabled OpenGL writes nothing
-    // to the depth buffer whatever glDepthMask says; GX treats the comparison
-    // as always passing and still honours update_enable, so it *does* write.
+    // to the depth buffer whatever glDepthMask says; GX honours update_enable
+    // regardless and treats the comparison as always passing, so it does write.
     //
-    // gfx_pc passes both flags straight through from the N64 render mode, and
-    // SM64 draws its background with the test off and Z_UPD on. Taken literally
-    // on GX that stamps the background's depth over the whole buffer, and every
-    // piece of level geometry drawn afterwards loses to it: the walls and
-    // platforms disappear behind the sky and only the nearest floor survives.
+    // gfx_pc passes both flags through from the N64 state, and SM64 draws its
+    // full-screen rectangles -- background, fades, transitions -- with
+    // G_ZBUFFER cleared but Z_UPD often still set. Their zn is 0, the near
+    // plane. Taken literally on GX, one of them stamps the nearest possible
+    // depth across the whole buffer and everything drawn afterwards loses the
+    // test, which is the picture appearing and disappearing.
     //
-    // This gating was briefly removed on the theory that it was itself a
-    // compensating change. It is not -- putting it back is what restores the
-    // scene. That theory came from a period when a frame flicker was corrupting
-    // every visual comparison; see the method note in docs/stories/004.
+    // This gating is independent of the depth mapping. It was removed once
+    // along with a mapping revert, which brought the flicker straight back.
     const bool test = gx_state.depth_test;
     GX_SetZMode(test ? GX_TRUE : GX_FALSE,
                 GFX_GX_ZFUNC_NEARER,
@@ -458,22 +452,11 @@ static void gfx_gx_emit_tev(const struct ShaderProgram *prg) {
     // still occlude whatever is behind them.
     if (prg->cc.opt_texture_edge) {
         GX_SetAlphaCompare(GX_GREATER, 76, GX_AOP_AND, GX_ALWAYS, 0);  // 0.3 * 255
+        GX_SetZCompLoc(GX_FALSE);
     } else {
         GX_SetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
+        GX_SetZCompLoc(GX_TRUE);
     }
-
-    // Z after the alpha stage, always.
-    //
-    // GX's default is to test and write depth *before* texturing and the alpha
-    // test, which is faster but means a fully transparent texel still stamps its
-    // depth. SM64 layers cut-out sprites over each other -- the sclera, iris and
-    // pupil of Mario's eyes are the clearest case -- and with the early Z the
-    // transparent border of one layer occludes the layer drawn on top of it, so
-    // the pupil ends up behind the white of the eye.
-    //
-    // The cost is losing early-Z rejection. Correctness first; STORY-018 can
-    // measure whether it is worth restoring for the opaque shaders.
-    GX_SetZCompLoc(GX_FALSE);
 
 #ifdef GFX_GX_DEBUG_ALPHA
     // Shows the combiner's alpha output as greyscale, by appending one stage
@@ -751,7 +734,9 @@ static void gfx_gx_set_use_alpha(bool use_alpha) {
 enum ProjMode { PROJ_NONE, PROJ_ORTHO, PROJ_PERSP };
 
 static enum ProjMode cur_proj_mode;
+#if GFX_GX_HW_PERSP
 static float cur_proj_mt22, cur_proj_mt23;
+#endif
 
 static void gfx_gx_load_ortho(void) {
     if (cur_proj_mode == PROJ_ORTHO) {
@@ -764,6 +749,7 @@ static void gfx_gx_load_ortho(void) {
     cur_proj_mode = PROJ_ORTHO;
 }
 
+#if GFX_GX_HW_PERSP
 static void gfx_gx_load_persp(float mt22, float mt23) {
     if (cur_proj_mode == PROJ_PERSP && mt22 == cur_proj_mt22 && mt23 == cur_proj_mt23) {
         return;
@@ -859,11 +845,16 @@ static bool gfx_gx_setup_perspective(const float *buf, size_t stride, size_t nve
         return false;
     }
 
-    // GX gives z_ndc = -mt22 + mt23/w, and the CPU path writes z_ndc = -zn with
-    // zn = p + q/w. Matching the two: mt22 = p, mt23 = -q.
-    gfx_gx_load_persp(p, -q);
+    // GX gives z_ndc = -mt22 + mt23/w, and the CPU path writes z_ndc = zn - 1
+    // with zn = p + q/w. Matching the two: mt22 = 1 - p, mt23 = q.
+    //
+    // Getting this pair wrong is what split the depth buffer between two
+    // conventions; keep it derived from whatever the CPU path in
+    // draw_triangles writes, never from the two independently.
+    gfx_gx_load_persp(1.0f - p, q);
     return true;
 }
+#endif  // GFX_GX_HW_PERSP
 
 static u8 float_to_u8(float v) {
     int i = (int) (v * 255.0f + 0.5f);
@@ -962,13 +953,21 @@ static void gfx_gx_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t bu
         }
     }
 
-    // Hardware divide when the batch has real perspective, CPU divide otherwise.
+    // CPU divide, always, with an identity orthographic projection downstream.
     //
-    // Decals are forced onto the CPU path: the hardware projection derives depth
-    // from w alone, which is exactly the information a decal does *not* differ
-    // in from its host surface, and it leaves no way to apply the bias below.
-    const bool hw_persp = !gx_state.zmode_decal
-                       && gfx_gx_setup_perspective(buf_vbo, stride, num_verts);
+    // The per-batch hardware projection is disabled: it derives depth from w
+    // through fitted coefficients, on a convention that did not match the one
+    // the CPU path uses, so the two paths sorted against each other. Every
+    // subsequent attempt to fix the sort order -- flipping the comparison,
+    // renegotiating the mapping, gating the depth mask -- was compensating for
+    // that split rather than closing it. Build with -DGFX_GX_HW_PERSP=1 to put
+    // it back; STORY-009 owns reinstating it with a matching convention, which
+    // is what perspective-correct texture interpolation needs.
+#if GFX_GX_HW_PERSP
+    const bool hw_persp = gfx_gx_setup_perspective(buf_vbo, stride, num_verts);
+#else
+    const bool hw_persp = false;
+#endif
     if (!hw_persp) {
         gfx_gx_load_ortho();
     }
@@ -985,22 +984,17 @@ static void gfx_gx_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t bu
         } else {
             const float w = v[3];
             const float inv_w = (w != 0.0f) ? 1.0f / w : 0.0f;
-            // Depth. Measured, not assumed: with z_is_from_0_to_1() gfx_pc hands
-            // us zn = z/w that is ~1 at the near plane and ~0 at the far plane.
-            // GX wants -1 near and 0 far, so the mapping is a negation.
+            // Depth conventions do not line up. z_is_from_0_to_1() made gfx_pc
+            // give us 0 at the near plane and 1 at the far plane; GX wants -1
+            // near and 0 far. Hence the -1 shift rather than a negation.
             //
-            // Getting this backwards -- reasoning that zn had to be 0 at the
-            // near plane and writing zn - 1 -- inverted the whole depth buffer.
-            // The symptom was the scene vanishing behind the sky, and flipping
-            // the comparison to GX_GEQUAL hid it while leaving the sort order
-            // wrong. Verify with -DGFX_GX_DEBUG_DEPTH: the bottom of the screen
-            // (floor, near the camera) must be the *bright* end.
-            // GX's near plane is -1, so biasing a decal towards the viewer
-            // means going more negative.
-            const float bias = gx_state.zmode_decal ? -GFX_GX_DECAL_BIAS : 0.0f;
-            float z = -(v[2] * inv_w) + bias;
-            if (z < -1.0f) z = -1.0f;
-            GX_Position3f32(v[0] * inv_w, v[1] * inv_w, z);
+            // This shift was replaced by a negation once, on the strength of a
+            // depth reading taken while the hardware projection above was
+            // feeding a second, incompatible convention into the same buffer.
+            // The reading was of a corrupted buffer and the conclusion was
+            // wrong: it inverted the sort order, which is what put the white of
+            // Mario's eyes in front of his pupils and Bowser under the floor.
+            GX_Position3f32(v[0] * inv_w, v[1] * inv_w, (v[2] * inv_w) - 1.0f);
         }
 
 #if defined(GFX_GX_DEBUG_CC)
@@ -1040,15 +1034,7 @@ static void gfx_gx_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t bu
         {
             const float w = v[3];
             const float zn = (w != 0.0f) ? (v[2] / w) : 0.0f;
-#ifdef GFX_GX_DEBUG_DEPTH_FINE
-            // 8-bit greyscale cannot resolve better than 1/255, which is far
-            // coarser than the depth separation between layered decals. Show
-            // the low bits instead: differences of ~1/1024 become full swings.
-            const float frac = zn * 1024.0f - floorf(zn * 1024.0f);
-            const u8 g = float_to_u8(frac);
-#else
             const u8 g = float_to_u8(zn);
-#endif
             GX_Color4u8(g, g, g, 255);
         }
 #elif defined(GFX_GX_DEBUG_BATCH)
@@ -1170,6 +1156,27 @@ static void gfx_gx_start_frame(void) {
     GX_InvVtxCache();
     GX_InvalidateTexAll();
     cur_shader = NULL;
+
+    // Resynchronise the state cache with the hardware.
+    //
+    // The EFB -> XFB copy in gfx_ogc.c has to force GX_SetZMode(GX_TRUE, ...,
+    // GX_TRUE) and GX_SetColorUpdate(GX_TRUE), otherwise GX_CopyDisp does not
+    // clear the EFB. That happens after the last draw of a frame and behind
+    // this file's back, so the cache below still describes the state the game
+    // asked for while the hardware has been moved elsewhere.
+    //
+    // The cache only emits on a change, so if the first draw of the next frame
+    // happens to match what the cache already believes, nothing is emitted and
+    // the draw runs with the copy's depth state. SM64's full-screen background
+    // rectangle asks for no depth test; left writing depth at zn = 0, the near
+    // plane, it stamps the whole buffer and the 3D scene behind it loses every
+    // comparison -- only the surfaces that draw without testing, the HUD and
+    // PRESS START, survive. Whether the first draw matches varies frame to
+    // frame, so the scene and the HUD take turns.
+    //
+    // start_frame runs at the top of every gfx_run, i.e. right after any copy.
+    gfx_gx_apply_zmode();
+    GX_SetColorUpdate(GX_TRUE);
 }
 
 static void gfx_gx_end_frame(void) {

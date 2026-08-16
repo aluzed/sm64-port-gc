@@ -30,6 +30,8 @@
 static GXRModeObj *rmode;
 static void *xfb[2];
 static int cur_xfb;
+// Set by swap_buffers_begin, i.e. only when the game submitted a display list.
+static bool frame_has_content;
 static void *gp_fifo;
 
 static uint64_t start_ticks;
@@ -248,7 +250,9 @@ static void gfx_ogc_swap_buffers_begin(void) {
     // the frames where it happened to be last.
     //
     // The copy belongs in swap_buffers_end, which runs exactly once per
-    // presented frame.
+    // presented frame. All this hook does now is record that a display list
+    // reached the renderer at all -- see swap_buffers_end.
+    frame_has_content = true;
 }
 
 // SM64 is a 30 fps game: the N64 produces one frame every two VI retraces, and
@@ -264,10 +268,23 @@ static void gfx_ogc_swap_buffers_begin(void) {
 // See the pacing block near the top of the file for what 50 Hz does instead.
 
 static void gfx_ogc_swap_buffers_end(void) {
-    gfx_ogc_copy_to_xfb();
-
-    VIDEO_SetNextFramebuffer(xfb[cur_xfb]);
-    VIDEO_Flush();
+    // Only present a frame that was actually drawn.
+    //
+    // gfx_pc calls this once per game iteration, but swap_buffers_begin (and
+    // therefore gfx_run) only when the game submitted a display list. An
+    // iteration can pass without one. Copying anyway presents an EFB that the
+    // previous GX_CopyDisp(..., GX_TRUE) has already cleared, i.e. a blank
+    // frame -- which is the picture appearing and disappearing at a regular
+    // beat. OpenGL never showed this: nothing clears its back buffer except
+    // gfx_pc itself, so a swap with no drawing re-presents the same image.
+    //
+    // The pacing below still runs on those iterations: the game's clock must
+    // not depend on whether it had anything to draw.
+    if (frame_has_content) {
+        gfx_ogc_copy_to_xfb();
+        VIDEO_SetNextFramebuffer(xfb[cur_xfb]);
+        VIDEO_Flush();
+    }
 
     if (!fifty_hz) {
         for (int i = 0; i < VSYNCS_PER_FRAME; i++) {
@@ -290,7 +307,10 @@ static void gfx_ogc_swap_buffers_end(void) {
         }
     }
 
-    cur_xfb ^= 1;
+    if (frame_has_content) {
+        cur_xfb ^= 1;
+        frame_has_content = false;
+    }
 }
 
 static double gfx_ogc_get_time(void) {
