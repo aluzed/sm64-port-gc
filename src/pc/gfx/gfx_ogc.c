@@ -33,6 +33,26 @@ static int cur_xfb;
 static void *gp_fifo;
 
 static uint64_t start_ticks;
+
+// -- frame pacing ------------------------------------------------------------
+//
+// 60 Hz modes present every two retraces, which is exactly 29.97 fps and
+// exactly what the N64 did. 50 Hz cannot express 30 fps that way, so it gets
+// time-based pacing instead: wait whole retraces until 1/30 s has elapsed,
+// averaging 30 game frames per second with a regular 2-2-1 retrace pattern.
+//
+// Forcing PAL60 was considered and rejected: it overrides the console's own
+// setting, and on a TV that cannot do 60 Hz the result is no picture at all.
+#define VSYNCS_PER_FRAME 2
+#define GAME_FRAME_USEC  33333
+
+static bool fifty_hz;
+static u64 next_frame_ticks;
+
+static bool video_is_50hz(void) {
+    const u32 tv = VIDEO_GetCurrentTvMode();
+    return tv == VI_PAL || tv == VI_DEBUG_PAL;
+}
 static volatile bool should_quit;
 static volatile bool should_power_off;
 
@@ -159,6 +179,8 @@ static void gfx_ogc_init(const char *game_name, bool start_in_fullscreen) {
 #endif
 
     start_ticks = gettime();
+    fifty_hz = video_is_50hz();
+    next_frame_ticks = start_ticks + microsecs_to_ticks(GAME_FRAME_USEC);
 }
 
 // -- GfxWindowManagerAPI -----------------------------------------------------
@@ -220,19 +242,39 @@ static void gfx_ogc_swap_buffers_begin(void) {
 // and audio -- at double speed. Measured on Dolphin before this was added:
 // 59.94 fps instead of 29.97.
 //
-// On a 50 Hz PAL mode this gives 25 fps, i.e. the same 17% slowdown the original
-// PAL release had. Doing better (forcing PAL60, or decoupling the game loop from
-// the retrace) is STORY-011.
-#define VSYNCS_PER_FRAME 2
+// Two retraces is exactly right on a 60 Hz mode, and exactly what the N64 did.
+// On a 50 Hz PAL mode it gives 25 fps, i.e. the 17% slowdown the original PAL
+// release suffered -- and it is not only a speed problem: the audio backend
+// feeds the DMA one block per game frame, so at 25 fps it starves continuously.
+// See the pacing block near the top of the file for what 50 Hz does instead.
 
 static void gfx_ogc_swap_buffers_end(void) {
     gfx_ogc_copy_to_xfb();
 
     VIDEO_SetNextFramebuffer(xfb[cur_xfb]);
     VIDEO_Flush();
-    for (int i = 0; i < VSYNCS_PER_FRAME; i++) {
+
+    if (!fifty_hz) {
+        for (int i = 0; i < VSYNCS_PER_FRAME; i++) {
+            VIDEO_WaitVSync();
+        }
+    } else {
+        // Always burn at least one retrace, both to bound the loop and to keep
+        // the flip synchronised with the scan-out.
         VIDEO_WaitVSync();
+        while (gettime() < next_frame_ticks) {
+            VIDEO_WaitVSync();
+        }
+        next_frame_ticks += microsecs_to_ticks(GAME_FRAME_USEC);
+
+        // After a long stall -- a level load, say -- the deadline is far in the
+        // past and catching up would run the game fast. Resynchronise instead.
+        const u64 now = gettime();
+        if (now > next_frame_ticks) {
+            next_frame_ticks = now + microsecs_to_ticks(GAME_FRAME_USEC);
+        }
     }
+
     cur_xfb ^= 1;
 }
 

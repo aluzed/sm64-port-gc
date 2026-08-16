@@ -124,17 +124,25 @@ static void gfx_gx_apply_zmode(void) {
         return;
     }
 
-    // Pass both flags through exactly as gfx_pc gives them, which is how the
-    // OpenGL backend behaves.
+    // The mask is gated on the test, because the two APIs disagree about what
+    // "no depth test" means. With GL_DEPTH_TEST disabled OpenGL writes nothing
+    // to the depth buffer whatever glDepthMask says; GX treats the comparison
+    // as always passing and still honours update_enable, so it *does* write.
     //
-    // An earlier version gated the mask on the test, on the argument that
-    // OpenGL writes no depth at all when GL_DEPTH_TEST is disabled. That was a
-    // compensating change for a symptom whose real cause was an inverted depth
-    // axis, fixed since; left in place afterwards it silently dropped the depth
-    // writes of every surface that legitimately writes without testing.
-    GX_SetZMode(gx_state.depth_test ? GX_TRUE : GX_FALSE,
+    // gfx_pc passes both flags straight through from the N64 render mode, and
+    // SM64 draws its background with the test off and Z_UPD on. Taken literally
+    // on GX that stamps the background's depth over the whole buffer, and every
+    // piece of level geometry drawn afterwards loses to it: the walls and
+    // platforms disappear behind the sky and only the nearest floor survives.
+    //
+    // This gating was briefly removed on the theory that it was itself a
+    // compensating change. It is not -- putting it back is what restores the
+    // scene. That theory came from a period when a frame flicker was corrupting
+    // every visual comparison; see the method note in docs/stories/004.
+    const bool test = gx_state.depth_test;
+    GX_SetZMode(test ? GX_TRUE : GX_FALSE,
                 GFX_GX_ZFUNC_NEARER,
-                gx_state.depth_mask ? GX_TRUE : GX_FALSE);
+                (test && gx_state.depth_mask) ? GX_TRUE : GX_FALSE);
 }
 
 static bool gfx_gx_z_is_from_0_to_1(void) {

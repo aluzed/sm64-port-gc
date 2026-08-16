@@ -1,7 +1,7 @@
 # STORY-011 — Video modes, resolution, PAL/NTSC and 16:9
 
 **Epic:** 2 — GX rendering
-**Status:** To do — ⚠️ **the 50 Hz half is a confirmed correctness bug, not polish**
+**Status:** 🟡 The 50 Hz cadence is fixed and measured; mode selection, 16:9 and overscan remain
 **Depends on:** STORY-004, STORY-009
 **Estimate:** M (2-3 d)
 **Platform:** GC + Wii
@@ -77,11 +77,18 @@ ratio and speed, whatever my TV and console settings.
    no picture at all on a 50 Hz PAL TV. Decoupling the game loop from the retrace is the only
    answer that stays correct in every mode.
 
-   Sketch: `swap_buffers_end` accumulates elapsed time (`gfx_ogc_get_ticks()`) and only calls
-   `produce_one_frame()` once 1/30 s has passed, presenting on every retrace. At 50 Hz that
-   gives a correct game cadence with a 2-2-1 frame distribution (a slight, regular judder); at
-   60 Hz the behaviour is identical to today's. Keep `VSYNCS_PER_FRAME` as the simple path for
-   60 Hz modes.
+   **✅ Implemented.** `swap_buffers_end` keeps the fixed two-retrace wait on 60 Hz modes —
+   exactly 29.97 fps, exactly what the N64 did — and switches to time-based pacing when
+   `VIDEO_GetCurrentTvMode()` reports `VI_PAL` or `VI_DEBUG_PAL`: burn whole retraces until
+   1/30 s has elapsed. On a 50 Hz display that averages 30 game frames per second with a
+   regular 2-2-1 retrace pattern.
+
+   A deadline left far in the past — after a level load, say — is not chased: catching up
+   would run the game fast, so the pacer resynchronises instead.
+
+   **Measured on the GameCube target, which Dolphin emulates as PAL 50 Hz: 25.00 fps before,
+   29.95 fps after.** That also un-starves the audio backend, which feeds the DMA one block per
+   game frame and was running 17 % short.
 
 4. **16:9.** On Wii, `CONF_GetAspectRatio()` gives the system setting. The `Makefile`'s
    `-DWIDESCREEN` already enables the field-of-view adjustment in `gfx_pc.c`. Make it a runtime
