@@ -3,9 +3,14 @@
 - This repo contains a full decompilation of Super Mario 64 (J), (U), (E), and (SH).
 - Naming and documentation of the source code and data structures are in progress.
 - Beyond Nintendo 64, it can also target Linux and Windows natively.
+- This fork additionally targets **Nintendo GameCube and Wii** (PowerPC) through devkitPPC,
+  producing a `.dol` executable. See [GameCube / Wii](#gamecube--wii-devkitppc) below and the
+  [port roadmap](docs/stories/README.md).
 
 This repo does not include all assets necessary for compiling the game.
 A prior copy of the game is required to extract the assets.
+**No copyrighted asset is distributed here** — ROM archives and images are excluded from
+version control, and compiled binaries must not be redistributed.
 
 ## Building native executables
 
@@ -39,6 +44,133 @@ A prior copy of the game is required to extract the assets.
 5. When you execute `gcc -v`, be sure you see `Target: i686-w64-mingw32` or `Target: x86_64-w64-mingw32`. If you see `Target: x86_64-pc-msys`, you either opened the wrong MSYS start menu entry or installed the incorrect gcc package.
 6. When switching between building for other platforms, run `make -C tools clean` first to allow for the tools to recompile on the new platform. This also helps when switching between shells like WSL and MSYS2.
 
+### GameCube / Wii (devkitPPC)
+
+> **Status: in development.** `make TARGET_WII=1` and `make TARGET_GC=1` produce a `.dol` that
+> boots and runs at the correct 29.97 fps under Dolphin, with no exceptions. Build system,
+> video (libogc VIDEO/GX), GameCube controller, GX renderer and textures are in place: the
+> game reaches the title screen and plays its attract-mode demo, and the in-game HUD renders
+> pixel-perfect. Still missing: the **colour combiner translation** (3D surfaces come out with
+> wrong colours), **perspective-correct texturing** on 3D geometry, **audio**, and **Wii Remote
+> support**. Not yet tested on real hardware.
+> Track progress in [`docs/stories/`](docs/stories/README.md).
+
+#### Dependencies
+
+The GameCube/Wii build is a **cross-compilation**: it needs the devkitPro toolchain in
+addition to the host tools already required by the PC build (Python 3, `make`, and a host
+C compiler used to build the asset-processing tools in `tools/`).
+
+| Dependency | What it provides | Notes |
+|---|---|---|
+| **devkitPPC** | `powerpc-eabi-gcc` and binutils for the Gekko/Broadway CPU | the cross compiler |
+| **libogc** | console runtime: `VIDEO`, `GX`, `AUDIO`, `PAD`, `WPAD`, `SYS` | equivalent of SDL here |
+| **libfat** | FAT filesystem on SD / USB, for saves and config | `sd:/apps/sm64/` |
+| **libwiiuse**, **libbte** | Wii Remote / Nunchuk / Classic Controller support | Wii target only |
+| **elf2dol** | converts the linked ELF into a bootable `.dol` | ships in `devkitPro/tools/bin` |
+
+Install them with the devkitPro package manager, which pulls everything through two
+metapackages:
+
+- **Windows** — run the [devkitPro graphical installer](https://github.com/devkitPro/installer/releases)
+  and tick **GameCube Development** and/or **Wii Development**. It installs devkitPPC, libogc,
+  libfat and its own MSYS2 environment (default location `C:\devkitPro`).
+- **Linux / macOS** — install `pacman` from devkitPro
+  ([instructions](https://devkitpro.org/wiki/devkitPro_pacman)), then:
+  ```sh
+  sudo dkp-pacman -S gamecube-dev   # GameCube: devkitPPC + libogc + libfat
+  sudo dkp-pacman -S wii-dev        # Wii: adds libwiiuse, libbte
+  ```
+
+You also need a **host compiler** and **Python 3** to build `tools/` and extract the assets.
+On Windows there is no need for a second MSYS2 install: devkitPro's own MSYS2 ships `pacman`
+with the `[msys]` repository, so from `C:\devkitPro\msys2\msys2_shell.bat`:
+
+```sh
+pacman -Syu                 # relaunch the shell if it asks you to
+pacman -S gcc python git    # make is already installed
+```
+
+The host compiler only builds the asset tools (`n64graphics`, `mio0`, `skyconv`, `armips`…),
+which run on the PC. The game itself is compiled by devkitPPC, so MSYS2's native gcc is fine
+here — the upstream warning about "the package called simply `gcc`" only applies to building
+the *game* for Windows.
+
+The build expects these environment variables (set automatically by the installer and by
+devkitPro's MSYS2 shell):
+
+```sh
+export DEVKITPRO=/opt/devkitpro
+export DEVKITPPC=$DEVKITPRO/devkitPPC
+```
+
+> **Launch the shell in MSYS mode: `msys2_shell.bat -msys`.**
+> By default it starts with `MSYSTEM=MINGW64`, which makes `uname` report `MINGW64_NT-…`.
+> `tools/Makefile` then takes its MinGW branch and passes `-municode` to `armips`, which the
+> Cygwin-targeting gcc rejects with
+> `unrecognized command-line option '-municode'`. In MSYS mode everything builds.
+
+Git Bash will not work: it has neither `gcc` nor `python3`, and does not mount `/opt/devkitpro`.
+
+Versions validated so far: devkitPPC 16.1.0, libogc from the current `wii-dev`/`gamecube-dev`
+metapackages, host gcc 15.3.0, Python 3.12.13. Record yours with
+`dkp-pacman -Q devkitPPC libogc`: devkitPro packages move fast and occasionally break
+backwards compatibility.
+
+#### Building
+
+1. Place a ROM named `baserom.<VERSION>.z64` in the repository root, as for any other target:
+   ```sh
+   unzip -p "Super Mario 64 (USA).zip" > baserom.us.z64
+   ```
+2. Build for your console:
+   ```sh
+   make TARGET_WII=1 -j8        # Wii
+   make TARGET_GC=1  -j8        # GameCube
+   ```
+3. The output lands in `build/<VERSION>_wii/sm64.<VERSION>.dol` (resp. `_gc`), around 12 MiB.
+4. `make TARGET_WII=1 dist` packages `dist/sm64/` with `boot.dol`, `meta.xml` and `icon.png`.
+
+PC and console builds use separate build directories, so they coexist without `make clean`.
+If you switch host platforms, run `make -C tools clean` so the host tools are rebuilt.
+
+#### Running
+
+- **Wii** — copy `dist/sm64/` to `sd:/apps/sm64/` and launch it from the Homebrew Channel.
+  The binary must be named `boot.dol`.
+- **GameCube** — launch the `.dol` with Swiss from an SD Gecko / SD2SP2.
+- **Dolphin** — `make TARGET_WII=1 run` starts the freshly built `.dol`. Override the
+  emulator path with `make ... run DOLPHIN=/path/to/Dolphin.exe`.
+
+Dolphin is the fast iteration loop, but it is more forgiving than real hardware: it hides
+missing `DCFlushRange` calls, misaligned buffers and audio DMA underruns. Validate each
+milestone on a real console — see
+[STORY-017](docs/stories/017-tests-dolphin-materiel.md).
+
+#### Controls
+
+| GameCube | Wii Classic | Wiimote + Nunchuk | N64 |
+|---|---|---|---|
+| Main stick | Left stick | Nunchuk stick | Analog stick |
+| A | a | A | A |
+| B | b | B | B |
+| Z or L trigger | ZL / ZR | Z (Nunchuk) | Z |
+| R trigger | Right trigger | C (Nunchuk) | R |
+| Start | + | + | Start |
+| C-stick | Right stick | D-pad | C buttons |
+| D-pad | D-pad | — | D-pad |
+
+A Wii Remote without a Nunchuk is not supported: SM64 needs an analog stick.
+
+#### Reporting a crash
+
+On a CPU exception the console shows the faulting address (SRR0). Translate it to a function
+name with the map file produced by the build:
+
+```sh
+powerpc-eabi-addr2line -e build/us_wii/sm64.us.elf <address>
+```
+
 ### Debugging
 
 The code can be debugged using `gdb`. On Linux install the `gdb` package and execute `gdb <executable>`. On MSYS2 install by executing `pacman -S winpty gdb` and execute `winpty gdb <executable>`. The `winpty` program makes sure the keyboard works correctly in the terminal. Also consider changing the `-mwindows` compile flag to `-mconsole` to be able to see stdout/stderr as well as be able to press Ctrl+C to interrupt the program. In the Makefile, make sure you compile the sources using `-g` rather than `-O2` to include debugging symbols. See any online tutorial for how to use gdb.
@@ -59,6 +191,8 @@ It is possible to build N64 ROMs as well with this repository. See https://githu
 	├── bin: C files for ordering display lists and textures
 	├── build: output directory
 	├── data: behavior scripts, misc. data
+	├── docs: project documentation
+	│   └── stories: GameCube/Wii port roadmap (one file per story)
 	├── doxygen: documentation infrastructure
 	├── enhancements: example source modifications
 	├── include: header files
