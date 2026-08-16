@@ -1,31 +1,34 @@
 # STORY-010 — Effects: fog, noise, alpha compare, Z decals
 
 **Epic:** 2 — GX rendering
-**Status:** To do — ⬅️ **next**, and task 0 below now blocks the whole in-game image
+**Status:** To do — ⬅️ **next** (task 0 is resolved; the four effects remain)
 **Depends on:** STORY-007, STORY-008, STORY-009
 **Estimate:** M (2-3 d)
 **Platform:** GC + Wii
 
-## Task 0 — the skybox occludes the level (blocking)
+## Task 0 — ✅ resolved: the depth comparison was inverted
 
-Inherited from [STORY-009](009-vertex-format-draw-triangles.md), whose diagnostics located it
-precisely: level geometry is submitted correctly and then **rejected by the depth test**. A
-full-screen surface — the skybox — sits at a constant `zn` ≈ 0.33 and writes depth, while level
-geometry in a perspective projection sits at `zn` close to 1 and therefore loses `GX_LEQUAL`.
-The HUD, at `zn` = 0, is the only thing that survives on top.
+Inherited from [STORY-009](009-vertex-format-draw-triangles.md) and now fixed. **The whole
+scene renders.**
 
-Reproduce in one run: `-DGFX_GX_DEBUG_BATCH` shows six large quads and nothing else; adding
-`-DGFX_GX_DEBUG_NO_DEPTH` makes the level appear.
+The comparison direction was wrong: with `GX_LEQUAL` every piece of level geometry was
+rejected, leaving only the surfaces that disable the depth test (skybox, HUD). Switching to
+`GX_GEQUAL` makes the scene appear. The depth value GX ends up storing for our `z` runs the
+opposite way round from the OpenGL convention the rest of the backend follows.
 
-First thing to check: **which end of `[0, 1]` the GX viewport maps the near plane to.**
-`GX_SetViewport(..., 0.0f, 1.0f)` was assumed to put the near plane at 0, to match `GX_LEQUAL`.
-If it is the other way round, every depth relation in the backend is inverted, which would
-explain the observation exactly. Then `GX_SetZCompLoc`, then a call-by-call comparison against
-`gfx_opengl.c` for one skybox draw.
+This was **determined experimentally, not derived** — the reasoning from the documented
+viewport formula predicted the opposite, and was wrong. `GFX_GX_ZFUNC_NEARER` carries the
+comparison, and `-DGFX_GX_DEBUG_ZFLIP` swaps it back to re-check.
 
-Note that a related fix already landed: the depth mask is now gated on the depth test, because
-OpenGL writes no depth at all when `GL_DEPTH_TEST` is off while GX still honours
-`update_enable`. Necessary, but not sufficient.
+> **Worth pinning down properly as part of the decal work below.** Building depth offsets on a
+> convention that is only known empirically is asking for trouble; the decal task is the right
+> place to establish what GX actually stores and to make the near/far mapping explicit.
+
+A second, independent fix was needed along the way: **the depth mask has to be gated on the
+depth test.** OpenGL writes nothing to the depth buffer when `GL_DEPTH_TEST` is disabled,
+whatever `glDepthMask` says; GX treats the comparison as always passing and still honours
+`update_enable`, so it does write. `gfx_pc` drives both flags straight from the N64 render
+mode, so the difference shows up immediately.
 
 ## Context
 

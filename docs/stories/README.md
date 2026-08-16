@@ -42,7 +42,7 @@ the game code**. That is the guiding rule for the whole roadmap.
 |---|---|---|
 | **M0 — It builds** | `make TARGET_WII=1` produces a `.dol` that boots to a black screen without crashing | 001 → 005 — ✅ **reached under Dolphin**, hardware pending |
 | **M1 — It draws** | A textured triangle on screen through GX | 006 → 009 — ✅ **geometry on screen**, textures done |
-| **M2 — The intro** | The Mario logo / title screen render correctly | 010, 011 — ✅ intro Mario head and sky render in full colour |
+| **M2 — The intro** | The Mario logo / title screen render correctly | 010, 011 — ✅ **the game renders**: levels, models, HUD, correct perspective |
 | **M3 — It plays** | Controller + audio: Mario is playable in the castle lobby | 012 → 014 |
 | **M4 — It saves** | Persistent save file, config read at boot | 015 |
 | **M5 — It ships** | `boot.dol` + `meta.xml` installable from the Homebrew Channel | 016, 017 |
@@ -163,10 +163,11 @@ make TARGET_GC=1  -j8      # -> build/us_gc/sm64.us.dol
 | Wii | ~12.85 MB | ≈ 13.5 MB | ✅ 29.97 fps, 0 exceptions, textures rendering |
 | GameCube | ~12.82 MB | ≈ 13.4 MB | ⚠️ 25.00 fps (PAL 50 Hz), 0 exceptions |
 
-The game boots, reaches the title screen and plays its attract-mode demo. The in-game HUD
-renders pixel-perfect, the intro Mario head shows its full colours and the sky renders
-correctly. **Level surfaces are still smeared** by affine texture interpolation, which is now
-the single blocker for a correct in-game image (STORY-009).
+**The game renders.** It boots, reaches the title screen and plays its attract-mode demo with
+level geometry, character models, textures, correct perspective and a pixel-perfect HUD.
+
+Still missing before it is playable: **audio** (STORY-012), the **50 Hz cadence** fix
+(STORY-011), and the four combiner effects — fog, alpha compare, decals, noise (STORY-010).
 
 Three lessons from getting here:
 

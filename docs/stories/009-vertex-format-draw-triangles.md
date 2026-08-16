@@ -198,25 +198,20 @@ mode, so the difference is visible immediately. That fix is correct and required
 ground start drawing — but it is not sufficient, so the skybox must be reaching us with the
 depth test *enabled*.
 
-### Where to look next
+### Outcome: the depth comparison was inverted
 
-The question is now narrow: **why does the skybox end up at `zn` ≈ 0.33 with depth writes,
-and how does the OpenGL backend avoid the same fate?** The two backends receive identical
-state from `gfx_pc`, so the difference has to be in how that state is interpreted.
+The first candidate was right. With `GX_LEQUAL` every piece of level geometry was rejected;
+switching to `GX_GEQUAL` makes the whole scene appear — Bowser in the Dark World renders with
+its model, tiled floor in correct perspective, coins, Mario's shadow and the HUD.
 
-Candidates, in order:
+Notably, **the reasoning predicted the opposite.** Working from GX's documented viewport
+formula `z_screen = z_ndc·(far − near) + far`, near maps to 0 and `GX_LEQUAL` should have been
+right. It is not. The fix is empirical and labelled as such in the code; establishing what GX
+actually stores is folded into STORY-010's decal task, which is the first thing that will
+depend on it.
 
-1. **The depth comparison direction.** Verify empirically which end of `[0,1]` the GX viewport
-   maps the near plane to. `GX_SetViewport(..., 0.0f, 1.0f)` was assumed to put the near plane
-   at 0, matching `GX_LEQUAL`. If it is the other way round, every depth relation is inverted
-   and this is the whole bug.
-2. **`GX_SetZCompLoc`.** Left at its default; combined with alpha compare it changes when Z is
-   written relative to the alpha reject.
-3. Compare against the OpenGL backend call by call for one skybox draw, rather than reasoning
-   about it.
-
-Candidate 1 is cheap and would explain the observation exactly, including why the HUD (at
-`zn` = 0) is the only thing that survives on top.
+The perspective work in this story is validated by the same screenshot: the floor tiles
+converge correctly, which is exactly what affine interpolation could not do.
 
 ### Debug views available
 

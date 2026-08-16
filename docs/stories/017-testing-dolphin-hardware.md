@@ -96,11 +96,9 @@ before they pile up.
    | M1 (Dolphin, Wii) | 2026-08-16 | Dolphin 2606a, D3D11 | ✅ | test triangle correct; game geometry rasterised (verified with false colours) |
    | M1 (hardware) | | Wii / GC | ⏳ | this is where missing `DCFlushRange` calls will show |
    | M2 (Dolphin, Wii) | 2026-08-16 | Dolphin 2606a, D3D11 | ✅ | after STORY-007: intro Mario head in full colour, sky correct, HUD pixel-perfect, 0 exceptions |
+   | M2 (Dolphin, Wii) — full scene | 2026-08-16 | Dolphin 2606a, D3D11 | ✅ | after the depth-comparison fix: Bowser in the Dark World renders with model, tiled floor in correct perspective, coins, Mario's shadow, HUD; 0 exceptions |
    | M2 (hardware) | | Wii / GC | ⏳ | |
    | M3 | | | | |
-
-   Remaining visual defect at M2: level surfaces are smeared by affine texture interpolation
-   (STORY-009). Colours themselves are correct.
 
 7. **PC non-regression.** On every port commit, check that plain `make` (the default Windows
    build) still compiles. That is the guard rail for the "do not touch the game code" rule.
