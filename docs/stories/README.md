@@ -166,24 +166,31 @@ make TARGET_GC=1  -j8      # -> build/us_gc/sm64.us.dol
 The game boots, reaches the title screen and plays its attract-mode demo. Level geometry,
 character models, textures and the HUD all draw, in correct perspective.
 
-**But the image is not correct yet, and earlier notes in this repo overstated it.** Looked at
-full-screen rather than in thumbnails, the intro Mario head shows dark jagged polygons across
-the face where the moustache, eyebrows and sideburns belong. What is confirmed by measurement:
+**The image is close but not yet correct**, and earlier notes in this repo overstated it. The
+intro Mario head had dark jagged polygons across the face; that is fixed (see below), and it
+now shows eyes with irises and pupils, eyebrows, moustache and the cap logo. Remaining known
+defects: the eye highlights are too large, and the brown parts render too dark.
+
+What has been established by measurement rather than argument:
 
 | Checked | Verdict |
 |---|---|
-| Texture upload and swizzle | ✅ correct — Dolphin's texture dump shows crisp, correctly-coloured textures with working alpha |
-| Combiner input routing | ✅ correct — at most one input varies per batch, measured with `-DGFX_GX_DEBUG_INPUTS` |
-| Texture coordinates | ✅ correct — `-DGFX_GX_DEBUG_UV` shows clean ramps |
-| Depth ordering | 🟡 works at scene level; within the intro head the range is very compressed |
-| The dark face polygons | ❌ **unexplained** |
+| Texture upload and swizzle | ✅ correct — Dolphin's texture dump shows crisp textures with working alpha |
+| Combiner input routing | ✅ correct — at most one input varies per batch (`-DGFX_GX_DEBUG_INPUTS`) |
+| Texture coordinates | ✅ correct (`-DGFX_GX_DEBUG_UV`) |
+| Combiner alpha output | ✅ correct — opaque geometry at 1.0, sparkle cutouts show their shape (`-DGFX_GX_DEBUG_ALPHA`) |
+| Combiner translation case | ✅ no surface uses the two-stage general form or `SHADER_TEXEL0A` (`-DGFX_GX_DEBUG_CC`) |
+| Per-batch projection fit | ❌ **was wrong** — see below |
 
-The leading suspect is the combiner path used by those specific decals — SM64 draws the
-moustache and eyebrows from an alpha-only texture tinted by a constant colour, which is the
-`SHADER_TEXEL0A` case. That has not been isolated yet.
+The jagged face was the perspective fit from STORY-009. Its two thresholds were absolute where
+they had to be relative: a batch qualified for the hardware path on a spread in `1/w` of
+`1e-9`, and the fit was accepted on an absolute residual of `1e-3`. The intro head spans about
+2 % of the depth range, so a fit 5 % wrong across the object passed validation and scrambled
+which of its own polygons was in front. Both thresholds are now relative to the batch's own
+spread.
 
-Also still missing: **audio** (STORY-012), the **50 Hz cadence** fix (STORY-011), and the rest
-of the combiner effects — fog, decals, noise (STORY-010).
+Still missing: **audio** (STORY-012), the **50 Hz cadence** fix (STORY-011), and the rest of
+the combiner effects — fog, decals, noise (STORY-010).
 
 Three lessons from getting here:
 

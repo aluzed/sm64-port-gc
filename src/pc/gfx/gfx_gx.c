@@ -78,6 +78,10 @@ struct ShaderProgram {
     int8_t built_for_varying;   // input index routed to the rasteriser, -1 none
     int8_t input_reg[4];        // TEV register holding each input, -1 = rasterised
     int8_t texel1_reg;          // register holding texel1, -1 = unused
+
+    // Which translation case the colour formula took, for -DGFX_GX_DEBUG_CC.
+    uint8_t dbg_case;           // 0 single, 1 multiply, 2 mix, 3 general
+    bool dbg_uses_texel0a;
 };
 
 static struct ShaderProgram shader_program_pool[MAX_SHADER_PROGRAMS];
@@ -317,6 +321,16 @@ static void gfx_gx_build_tev(struct ShaderProgram *prg, int varying_input) {
     gfx_gx_plan_form(cc, 0, &col);
     gfx_gx_plan_form(cc, 1, &alp);
 
+    prg->dbg_case = cc->do_single[0] ? 0 : (cc->do_multiply[0] ? 1 : (cc->do_mix[0] ? 2 : 3));
+    prg->dbg_uses_texel0a = false;
+    for (int i = 0; i < 2; i++) {
+        for (int j = 0; j < 4; j++) {
+            if (cc->c[i][j] == SHADER_TEXEL0A) {
+                prg->dbg_uses_texel0a = true;
+            }
+        }
+    }
+
     // Colour and alpha share the same stages, so the shorter form is padded
     // with a pass-through of the previous result.
     const int n = (col.count > alp.count) ? col.count : alp.count;
@@ -375,7 +389,8 @@ static void gfx_gx_build_tev(struct ShaderProgram *prg, int varying_input) {
 
 static void gfx_gx_emit_tev(const struct ShaderProgram *prg) {
 #if defined(GFX_GX_DEBUG_UV) || defined(GFX_GX_DEBUG_BATCH) || defined(GFX_GX_DEBUG_DEPTH) \
-    || defined(GFX_GX_DEBUG_ZSTATE) || defined(GFX_GX_DEBUG_INPUTS)
+    || defined(GFX_GX_DEBUG_ZSTATE) || defined(GFX_GX_DEBUG_INPUTS) \
+    || defined(GFX_GX_DEBUG_CC)
     // Flat view: one PASSCLR stage so the vertex colour reaches the screen
     // untouched. draw_triangles feeds it frac(u), frac(v), which turns texture
     // coordinates into a picture -- smooth ramps mean sane coordinates, flat
@@ -431,6 +446,25 @@ static void gfx_gx_emit_tev(const struct ShaderProgram *prg) {
         GX_SetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
         GX_SetZCompLoc(GX_TRUE);
     }
+
+#ifdef GFX_GX_DEBUG_ALPHA
+    // Shows the combiner's alpha output as greyscale, by appending one stage
+    // that broadcasts the accumulated alpha into RGB. Unlike the other debug
+    // views this keeps the real TEV chain, so it reports what the blender and
+    // the alpha test actually receive.
+    {
+        const u8 st = GX_TEVSTAGE0 + prg->num_stages;
+        GX_SetTevOrder(st, GX_TEXCOORDNULL, GX_TEXMAP_NULL, GX_COLOR0A0);
+        GX_SetTevColorIn(st, GX_CC_ZERO, GX_CC_ZERO, GX_CC_ZERO, GX_CC_APREV);
+        GX_SetTevColorOp(st, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
+        GX_SetTevAlphaIn(st, GX_CA_ZERO, GX_CA_ZERO, GX_CA_ZERO, GX_CA_KONST);
+        GX_SetTevAlphaOp(st, GX_TEV_ADD, GX_TB_ZERO, GX_CS_SCALE_1, GX_TRUE, GX_TEVPREV);
+        GX_SetTevKAlphaSel(st, GX_TEV_KASEL_1);
+        GX_SetNumTevStages(prg->num_stages + 1);
+    }
+    GX_SetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
+    return;
+#endif
 
     GX_SetNumTevStages(prg->num_stages ? prg->num_stages : 1);
 #endif
@@ -753,9 +787,16 @@ static bool gfx_gx_setup_perspective(const float *buf, size_t stride, size_t nve
         return false;
     }
 
-    // All the same depth: a 2D batch. Perspective would be a no-op at best and
-    // ill-conditioned at worst.
-    if (iw_hi - iw_lo < 1e-9f) {
+    // Not enough spread in 1/w to fit anything meaningful. That covers 2D
+    // batches, but also near-flat 3D ones -- and for those the CPU path is not a
+    // compromise: when w barely varies, affine interpolation is very nearly
+    // correct anyway, while the fit would be ill-conditioned.
+    //
+    // The threshold is relative. An absolute one lets through batches whose
+    // depth spread is a rounding error, and the resulting garbage projection
+    // wrecks the depth ordering *within* the object: the intro Mario head lost
+    // its eyes and moustache to exactly that.
+    if (iw_hi - iw_lo < 0.01f * iw_hi) {
         return false;
     }
 
@@ -779,7 +820,14 @@ static bool gfx_gx_setup_perspective(const float *buf, size_t stride, size_t nve
     }
     const float iw_m = 1.0f / buf[mid * stride + 3];
     const float zn_m = buf[mid * stride + 2] * iw_m;
-    if (fabsf((p + q * iw_m) - zn_m) > 1e-3f) {
+
+    // The residual has to be judged against the batch's own depth spread, not
+    // against an absolute epsilon. A head occupies about 2% of the depth range,
+    // so a 1e-3 absolute tolerance accepts a fit that is 5% wrong across the
+    // object -- enough to scramble which of its own polygons is in front.
+    const float zn_span = fabsf(zn_hi - zn_lo);
+    const float tol = fmaxf(0.02f * zn_span, 1e-6f);
+    if (fabsf((p + q * iw_m) - zn_m) > tol) {
         return false;
     }
 
@@ -917,7 +965,16 @@ static void gfx_gx_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t bu
             GX_Position3f32(v[0] * inv_w, v[1] * inv_w, -(v[2] * inv_w));
         }
 
-#if defined(GFX_GX_DEBUG_INPUTS)
+#if defined(GFX_GX_DEBUG_CC)
+        // Which combiner translation case this surface takes.
+        //   red   = uses a texture
+        //   green = the two-stage general form, the only one that can go wrong
+        //           through intermediate clamping
+        //   blue  = an operand is SHADER_TEXEL0A (texture alpha used as colour)
+        GX_Color4u8(cur_shader->cc.used_textures[0] ? 230 : 30,
+                    cur_shader->dbg_case == 3 ? 230 : 30,
+                    cur_shader->dbg_uses_texel0a ? 230 : 30, 255);
+#elif defined(GFX_GX_DEBUG_INPUTS)
         // How many combiner inputs actually vary across this batch. The backend
         // can only route one through the rasteriser; any second one is frozen at
         // the first vertex's value, which would show up as flat or blotchy
