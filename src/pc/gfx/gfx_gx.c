@@ -124,21 +124,17 @@ static void gfx_gx_apply_zmode(void) {
         return;
     }
 
-    // The depth mask has to be gated on the test, because the two APIs disagree
-    // about what "no depth test" means. With GL_DEPTH_TEST disabled OpenGL
-    // writes nothing to the depth buffer whatever glDepthMask says; GX treats
-    // the comparison as always passing and still honours update_enable, so it
-    // *does* write.
+    // Pass both flags through exactly as gfx_pc gives them, which is how the
+    // OpenGL backend behaves.
     //
-    // gfx_pc drives these two flags straight from the N64 render mode, and SM64
-    // draws its skybox with the test off and Z_UPD on. Taken literally on GX
-    // that fills the whole depth buffer at the near plane and every piece of
-    // level geometry drawn afterwards fails GX_LEQUAL -- the scene disappears
-    // behind the sky.
-    const bool test = gx_state.depth_test;
-    GX_SetZMode(test ? GX_TRUE : GX_FALSE,
+    // An earlier version gated the mask on the test, on the argument that
+    // OpenGL writes no depth at all when GL_DEPTH_TEST is disabled. That was a
+    // compensating change for a symptom whose real cause was an inverted depth
+    // axis, fixed since; left in place afterwards it silently dropped the depth
+    // writes of every surface that legitimately writes without testing.
+    GX_SetZMode(gx_state.depth_test ? GX_TRUE : GX_FALSE,
                 GFX_GX_ZFUNC_NEARER,
-                (test && gx_state.depth_mask) ? GX_TRUE : GX_FALSE);
+                gx_state.depth_mask ? GX_TRUE : GX_FALSE);
 }
 
 static bool gfx_gx_z_is_from_0_to_1(void) {

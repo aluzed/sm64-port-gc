@@ -202,7 +202,16 @@ static bool gfx_ogc_start_frame(void) {
 }
 
 static void gfx_ogc_swap_buffers_begin(void) {
-    gfx_ogc_copy_to_xfb();
+    // Deliberately empty. The EFB -> XFB copy used to live here, which was
+    // wrong: gfx_pc calls this once per gfx_run(), i.e. once per display list,
+    // while GX_CopyDisp(..., GX_TRUE) also *clears* the EFB. When a frame is
+    // built from more than one display list -- which is what SM64's intro does,
+    // drawing the background and the Goddard Mario head separately -- each copy
+    // wiped what the previous one had accumulated, so the head appeared only on
+    // the frames where it happened to be last.
+    //
+    // The copy belongs in swap_buffers_end, which runs exactly once per
+    // presented frame.
 }
 
 // SM64 is a 30 fps game: the N64 produces one frame every two VI retraces, and
@@ -217,6 +226,8 @@ static void gfx_ogc_swap_buffers_begin(void) {
 #define VSYNCS_PER_FRAME 2
 
 static void gfx_ogc_swap_buffers_end(void) {
+    gfx_ogc_copy_to_xfb();
+
     VIDEO_SetNextFramebuffer(xfb[cur_xfb]);
     VIDEO_Flush();
     for (int i = 0; i < VSYNCS_PER_FRAME; i++) {

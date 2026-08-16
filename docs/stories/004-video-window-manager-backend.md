@@ -132,6 +132,31 @@ Deliberately **not fixed here**: forcing PAL60 from `gfx_ogc.c` would override t
 own setting, at the risk of showing no picture at all on a 50 Hz PAL TV. The right answer is
 to decouple the game loop from the retrace, which is STORY-011's scope.
 
+### The EFB copy belongs in `swap_buffers_end`, not `begin`
+
+The copy was originally in `swap_buffers_begin`. That is wrong, and it produced a flicker that
+went unnoticed for several sessions because still screenshots cannot show it.
+
+`gfx_pc` calls `swap_buffers_begin` once per `gfx_run()`, i.e. **once per display list**, while
+`GX_CopyDisp(xfb, GX_TRUE)` also **clears the EFB**. When a frame is built from more than one
+display list — which is exactly what SM64's intro does, drawing the tiled background and the
+Goddard Mario head separately — each copy wiped what the previous one had accumulated. The
+head therefore appeared only on the frames where it happened to come last.
+
+Measured with a burst capture 250 ms apart, sampling mean brightness over the render area:
+
+```
+before:  45  45 134  45  45  83  79  45  45  78  45  45     <- ~2 frames in 3 empty
+after:  178 162 185 186  97  95  95  94  89  89 130 189     <- varies with the animation only
+```
+
+`swap_buffers_end` runs exactly once per presented frame, so the copy goes there.
+
+**Method note.** This flicker invalidated several earlier conclusions: single screenshots were
+sampling different phases of it, which made stable behaviour look like regressions and sent
+the GX work chasing phantoms. When judging a renderer, capture a burst and compare, never one
+frame.
+
 ### Validated
 
 - Clean boot, **no exception** in the Dolphin log, on both targets.
