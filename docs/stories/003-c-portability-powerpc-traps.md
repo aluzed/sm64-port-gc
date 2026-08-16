@@ -6,6 +6,38 @@
 **Estimate:** M (2-3 d)
 **Platform:** GC + Wii
 
+## Found on hardware: an unaligned bump allocator
+
+`alloc_only_pool_alloc`, in its `USE_SYSTEM_MALLOC` form, advanced its bump pointer by the raw
+requested size without rounding it, while the variant immediately below it in the same file has
+always used `ALIGN4`. One allocation of an odd size therefore misaligns every allocation after
+it in that pool.
+
+`level_cmd_set_terrain_data` allocates `get_area_terrain_size() * sizeof(Collision)` bytes and
+`Collision` is an `s16`. An area with an odd number of collision entries -- the castle interior
+has one -- leaves the level pool two bytes out, and the graph node allocated next takes an
+`stfs` to an unaligned address. That is an alignment exception on PowerPC.
+
+Three things make this the archetype of what this story is about:
+
+- **x86 hides it entirely.** Every unaligned access there simply works, so the bug is invisible
+  in the PC builds and has presumably been latent upstream for years.
+- **Dolphin hides it too.** Its JIT performs the unaligned store rather than raising the
+  exception, so no amount of emulator testing surfaces it.
+- **Integer accesses hide it further.** The two `stw` instructions immediately before the
+  faulting `stfs` are equally unaligned and are fixed up in hardware. Only the float traps, so
+  the crash lands nowhere near anything that looks like an alignment mistake.
+
+Fixed in the allocator rather than at the call site, so every caller is covered, and rounded to
+8 rather than 4 because malloc returns 8-byte-aligned blocks and `AllocOnlyPoolBlock` is padded
+to keep the payload 8-aligned.
+
+**This modifies `src/game/memory.c`, against the roadmap's own rule.** The rule says a fix
+belonging there means an abstraction is missing in `src/pc`; that is not the case here. There
+is no abstraction that would let a platform layer correct another module's internal allocator.
+It is a portability defect in shared code, the same category as `-fsigned-char`, and it belongs
+where the defect is.
+
 ## Context
 
 With the toolchain in place, compilation fails en masse: `src/pc/` holds SDL2, OpenGL,

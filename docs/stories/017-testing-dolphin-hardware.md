@@ -32,6 +32,38 @@ What did not survive contact, and now has a ticket each:
 - [STORY-021](021-texture-dropouts.md) — textures drop in and out with camera movement. Already
   known under Dolphin; hardware confirms it is not an emulator artefact.
 
+### Second run: a crash Dolphin structurally could not have found
+
+Opening the castle door crashed with `Exception (Alignment)`, PC `0x80005B64`.
+
+Resolved with `addr2line` against the build's ELF, then confirmed by disassembling the
+faulting instruction rather than inferring it:
+
+```
+80005b5c:  stw   r3,4(r3)      <- unaligned, fixed up in hardware, passes
+80005b60:  stw   r3,8(r3)      <- same
+80005b64:  stfs  f1,20(r3)     <- r3 = 0x80FE73AA, so EA = 0x80FE73BE: traps
+```
+
+`init_graph_node_ortho_projection`, reached through `level_cmd_begin_area`. The pointer it was
+handed was already two bytes out.
+
+Cause, in `alloc_only_pool_alloc`: the `USE_SYSTEM_MALLOC` variant advanced its bump pointer by
+the raw requested size, never rounding it, while the variant right below it has always used
+`ALIGN4`. `level_cmd_set_terrain_data` allocates
+`get_area_terrain_size() * sizeof(Collision)` bytes and `Collision` is an `s16`, so an odd
+number of collision entries leaves the pool two bytes off for everything allocated after it.
+The castle interior has such an area; the courtyard does not, which is why it appeared exactly
+at that door.
+
+**Dolphin cannot find this.** Its JIT performs unaligned accesses instead of raising the
+alignment exception, so the float store simply succeeds there. No amount of emulator testing
+would have surfaced it — which is the entire argument of this story, demonstrated.
+
+Worth noting what did *not* need debugging: the two integer stores immediately before the
+faulting one are equally unaligned and went through untouched. Reading the disassembly rather
+than guessing from the symbol name is what made that obvious.
+
 Still unverified on hardware: a long session for audio drift, the memory card save surviving a
 power cycle, 50/60 Hz switching, and overscan on a CRT.
 

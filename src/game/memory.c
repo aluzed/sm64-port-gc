@@ -518,7 +518,29 @@ void alloc_only_pool_clear(struct AllocOnlyPool *pool) {
 
 void *alloc_only_pool_alloc(struct AllocOnlyPool *pool, s32 size) {
     u8 *addr;
-    u32 s = size;
+    // Round the allocation up so the bump pointer stays aligned.
+    //
+    // The variant of this function below, the one that does not use the system
+    // allocator, has always done this with ALIGN4. This one did not, and on
+    // PowerPC that is fatal rather than merely slow.
+    //
+    // How it bites: level_cmd_set_terrain_data allocates
+    // get_area_terrain_size() * sizeof(Collision) bytes from the level pool,
+    // and Collision is an s16, so an odd number of collision entries leaves the
+    // bump pointer two bytes off. The next allocation out of the same pool is a
+    // graph node, and init_graph_node_ortho_projection stores an f32 into it.
+    // An unaligned stfs raises an alignment exception. Unaligned *integer*
+    // stores are fixed up in hardware, which is why the two stw instructions
+    // immediately before it went through and only the float trapped -- and why
+    // this crashed on entering the castle rather than anywhere obvious.
+    //
+    // x86 hides it completely: every unaligned access there simply works.
+    //
+    // Eight rather than four, because malloc hands back 8-byte-aligned blocks
+    // and AllocOnlyPoolBlock is padded to keep the payload 8-aligned too. Going
+    // no coarser than that preserves what malloc promised, for the cost of at
+    // most seven bytes per allocation.
+    u32 s = ALIGN8(size);
     if (pool->lastBlockSize - pool->lastBlockNextPos < s) {
         struct AllocOnlyPoolBlock *block;
         u32 nextSize = pool->lastBlockSize * 2;
