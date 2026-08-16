@@ -124,10 +124,10 @@ Decisions taken along the way that differ from the plan above:
    full-screen black rectangle SM64 paints as its background. It now draws in `end_frame`, on
    top of everything. That cost several cycles of believing the pipeline drew nothing.
 
-2. **Inverted depth convention.** With `z_is_from_0_to_1()` returning `true`, `gfx_pc` supplies
-   `z/w` with 0 at the near plane and 1 at the far plane. GX expects −1 near and 0 far. The
-   conversion is therefore `z/w - 1`, not `-(z/w)`: negating swaps near and far, and the
-   background wins every depth test.
+2. ~~**Inverted depth convention.**~~ **This entry was wrong — see the correction below.**
+   It claimed that with `z_is_from_0_to_1()` returning `true`, `gfx_pc` supplies `z/w` with 0
+   at the near plane, so the conversion had to be `z/w - 1` rather than `-(z/w)`. The
+   reasoning was plausible and never measured, and it is the opposite of the truth.
 
 3. **`guMtxIdentity()` on a `Mtx44`.** `Mtx` is `f32[3][4]`, `Mtx44` is `f32[4][4]` — both
    decay to `f32(*)[4]`, so **the compiler says nothing**, and the fourth row is left
@@ -147,6 +147,29 @@ Three aids, each of which paid for itself:
 
 The third one confirmed the game really does submit geometry: the Mario head mesh from the
 intro is clearly recognisable, one hue per triangle.
+
+### Correction: the depth convention, measured
+
+Bug 2 above was diagnosed by reasoning and got it backwards, which cost most of two later
+sessions. **Measured** with `-DGFX_GX_DEBUG_DEPTH`, which paints `zn = z/w` as greyscale:
+
+| Screen region | What it is | `zn` |
+|---|---|---|
+| bottom | floor, near the camera | **≈ 0.91** |
+| top | background, far away | **≈ 0.33** |
+
+So `gfx_pc` hands us `zn` that is **~1 at the near plane and ~0 at the far plane**. GX wants
+−1 near and 0 far, so the mapping is a plain negation, `-(z/w)` — which is what the code did
+before the "fix".
+
+The inversion made the whole depth buffer run backwards. Its symptom was the entire scene
+disappearing behind the sky, and switching the comparison to `GX_GEQUAL` hid that while
+leaving the sort order wrong — a compensating error, not a fix. The code is now
+`-(z/w)` with `GX_LEQUAL`, the canonical libogc setup, matching the `GX_MAX_Z24` clear.
+
+The lesson is the same one as below, applied to a different subject: **a convention that can
+be measured in one build should never be argued about.** The comment in `gfx_gx.c` now states
+how to re-verify it in one run.
 
 ### Method lesson
 

@@ -6,29 +6,30 @@
 **Estimate:** M (2-3 d)
 **Platform:** GC + Wii
 
-## Task 0 — ✅ resolved: the depth comparison was inverted
+## Task 0 — ✅ resolved: the depth mapping was inverted
 
 Inherited from [STORY-009](009-vertex-format-draw-triangles.md) and now fixed. **The whole
-scene renders.**
+scene renders, in the right order.**
 
-The comparison direction was wrong: with `GX_LEQUAL` every piece of level geometry was
-rejected, leaving only the surfaces that disable the depth test (skybox, HUD). Switching to
-`GX_GEQUAL` makes the scene appear. The depth value GX ends up storing for our `z` runs the
-opposite way round from the OpenGL convention the rest of the backend follows.
+The root cause was in STORY-006: the sign of the depth mapping was decided by reasoning rather
+than measurement, and got it backwards. Measured with `-DGFX_GX_DEBUG_DEPTH`, `gfx_pc` hands
+the backend `zn = z/w` that is **~1 at the near plane and ~0 at the far plane** (bottom of
+screen 0.91, distant background 0.33). GX wants −1 near and 0 far, so the mapping is a plain
+negation `-(z/w)`, not `z/w - 1`.
 
-This was **determined experimentally, not derived** — the reasoning from the documented
-viewport formula predicted the opposite, and was wrong. `GFX_GX_ZFUNC_NEARER` carries the
-comparison, and `-DGFX_GX_DEBUG_ZFLIP` swaps it back to re-check.
-
-> **Worth pinning down properly as part of the decal work below.** Building depth offsets on a
-> convention that is only known empirically is asking for trouble; the decal task is the right
-> place to establish what GX actually stores and to make the near/far mapping explicit.
+An intermediate "fix" switched the comparison to `GX_GEQUAL`. It made the scene appear, but it
+was a **compensating error**: it inverted the comparison to match an inverted buffer, which
+left the sort order wrong. Both are now correct — `-(z/w)` with `GX_LEQUAL`, the canonical
+libogc setup matching the `GX_MAX_Z24` clear. `-DGFX_GX_DEBUG_ZFLIP` swaps the comparison to
+re-check the orientation in one run.
 
 A second, independent fix was needed along the way: **the depth mask has to be gated on the
 depth test.** OpenGL writes nothing to the depth buffer when `GL_DEPTH_TEST` is disabled,
 whatever `glDepthMask` says; GX treats the comparison as always passing and still honours
 `update_enable`, so it does write. `gfx_pc` drives both flags straight from the N64 render
 mode, so the difference shows up immediately.
+
+The decal task below can now build on a mapping that has been measured rather than assumed.
 
 ## Context
 

@@ -198,17 +198,16 @@ mode, so the difference is visible immediately. That fix is correct and required
 ground start drawing — but it is not sufficient, so the skybox must be reaching us with the
 depth test *enabled*.
 
-### Outcome: the depth comparison was inverted
+### Outcome: the depth *mapping* was inverted, back in STORY-006
 
-The first candidate was right. With `GX_LEQUAL` every piece of level geometry was rejected;
-switching to `GX_GEQUAL` makes the whole scene appear — Bowser in the Dark World renders with
-its model, tiled floor in correct perspective, coins, Mario's shadow and the HUD.
+Not the comparison — the sign of the depth we emit. `gfx_pc` hands us `zn = z/w` that is ~1 at
+the near plane and ~0 at the far plane (measured: floor near the camera 0.91, distant
+background 0.33), so the mapping to GX's −1-near/0-far range is a plain negation. STORY-006
+had reasoned it the other way round and written `z/w - 1`.
 
-Notably, **the reasoning predicted the opposite.** Working from GX's documented viewport
-formula `z_screen = z_ndc·(far − near) + far`, near maps to 0 and `GX_LEQUAL` should have been
-right. It is not. The fix is empirical and labelled as such in the code; establishing what GX
-actually stores is folded into STORY-010's decal task, which is the first thing that will
-depend on it.
+An intermediate attempt switched the comparison to `GX_GEQUAL`, which made the scene appear
+but only by inverting the comparison to match an inverted buffer — the sort order stayed
+wrong. Both are fixed now: `-(z/w)` with `GX_LEQUAL`.
 
 The perspective work in this story is validated by the same screenshot: the floor tiles
 converge correctly, which is exactly what affine interpolation could not do.

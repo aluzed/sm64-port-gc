@@ -94,21 +94,15 @@ static struct {
     bool initialised;
 } gx_state;
 
-// Which comparison lets the nearer surface win.
+// Which comparison lets the nearer surface win. GX_LEQUAL, the canonical libogc
+// setup: near maps to 0, far to 1, and the depth buffer is cleared to
+// GX_MAX_Z24. See gfx_gx_depth_ndc for the mapping that makes this hold.
 //
-// Determined experimentally, not derived: with GX_LEQUAL every piece of level
-// geometry was rejected while only the depth-test-disabled surfaces (skybox,
-// HUD) survived, and flipping the comparison made the whole scene appear. So
-// the depth value GX ends up storing for our z runs the opposite way round from
-// the OpenGL convention the rest of this file follows.
-//
-// Rebuild with -DGFX_GX_DEBUG_ZFLIP to swap it back and re-check this, which is
-// worth doing before relying on depth offsets: STORY-010's decal work should
-// confirm the convention properly rather than inherit this empirically.
+// -DGFX_GX_DEBUG_ZFLIP swaps it, which is how the orientation was pinned down.
 #ifdef GFX_GX_DEBUG_ZFLIP
-#define GFX_GX_ZFUNC_NEARER GX_LEQUAL
-#else
 #define GFX_GX_ZFUNC_NEARER GX_GEQUAL
+#else
+#define GFX_GX_ZFUNC_NEARER GX_LEQUAL
 #endif
 
 static void gfx_gx_apply_zmode(void) {
@@ -773,8 +767,9 @@ static bool gfx_gx_setup_perspective(const float *buf, size_t stride, size_t nve
         return false;
     }
 
-    // z_ndc must come out as zn - 1, the same value the CPU path writes.
-    gfx_gx_load_persp(1.0f - p, q);
+    // GX gives z_ndc = -mt22 + mt23/w, and the CPU path writes z_ndc = -zn with
+    // zn = p + q/w. Matching the two: mt22 = p, mt23 = -q.
+    gfx_gx_load_persp(p, -q);
     return true;
 }
 
@@ -884,12 +879,17 @@ static void gfx_gx_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t bu
         } else {
             const float w = v[3];
             const float inv_w = (w != 0.0f) ? 1.0f / w : 0.0f;
-            // Depth conventions do not line up. z_is_from_0_to_1() made gfx_pc
-            // give us 0 at the near plane and 1 at the far plane; GX wants -1
-            // near and 0 far. Hence the -1 shift rather than a negation:
-            // negating maps near to far and lets the background win every depth
-            // test, which shows up as a uniform full-screen fill.
-            GX_Position3f32(v[0] * inv_w, v[1] * inv_w, (v[2] * inv_w) - 1.0f);
+            // Depth. Measured, not assumed: with z_is_from_0_to_1() gfx_pc hands
+            // us zn = z/w that is ~1 at the near plane and ~0 at the far plane.
+            // GX wants -1 near and 0 far, so the mapping is a negation.
+            //
+            // Getting this backwards -- reasoning that zn had to be 0 at the
+            // near plane and writing zn - 1 -- inverted the whole depth buffer.
+            // The symptom was the scene vanishing behind the sky, and flipping
+            // the comparison to GX_GEQUAL hid it while leaving the sort order
+            // wrong. Verify with -DGFX_GX_DEBUG_DEPTH: the bottom of the screen
+            // (floor, near the camera) must be the *bright* end.
+            GX_Position3f32(v[0] * inv_w, v[1] * inv_w, -(v[2] * inv_w));
         }
 
 #if defined(GFX_GX_DEBUG_ZSTATE)
