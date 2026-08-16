@@ -60,11 +60,45 @@ the temporary is renamed over it — libfat's `rename` does not replace an exist
 removal is required. That leaves a narrow window with no real file, which the read side covers
 by falling back to the temporary. A power cut therefore costs the new save, never the old one.
 
-**Verified under Dolphin** on the Wii target with the emulated SD card, read back from the
-host filesystem rather than from a screenshot: `sd:/sm64/sm64config.txt` (188 bytes, real
-content) and `sd:/sm64/sm64_save_file.bin` (512 bytes exactly, the EEPROM image), with no
-`.tmp` left behind. This Dolphin build emulates only the Wii SD card — there is no GameCube SD
-adapter to emulate — so the GameCube path is code-identical but untested off hardware.
+### The GameCube memory card
+
+A stock GameCube has a memory card and no SD adapter, so the card is the **default** backend
+there; FAT wins only on Wii, or with `-DSTORAGE_OGC_PREFER_FAT=1`, which is worth having
+because a save on a card cannot be carried to the PC build and one on SD can.
+
+It is a different API rather than a different path: no `fopen`, writes aligned to the card's
+sector, a 40 KB work area, and a directory entry the system's card manager lists.
+
+Crash safety had to be reached another way — there is no `rename` on a card. **The file is two
+sectors, written alternately.** Each carries a magic, a sequence number, the payload length and
+a checksum; a read takes the valid sector with the higher number, a write always targets the
+other one. Losing power mid-write costs the new save and leaves the previous one intact, the
+same guarantee as the SD path. Cost: two blocks out of the 59 a standard card holds.
+
+The card is mounted only for the duration of one operation. Holding it mounted would keep the
+EXI channel busy and make swapping cards unsafe, and SM64 only saves at transition points, so
+the mount never lands in a gameplay frame.
+
+### Verified
+
+Both backends, read back from the host filesystem rather than judged on screen.
+
+**Wii SD**, emulated card: `sd:/sm64/sm64config.txt` (188 bytes, real content) and
+`sd:/sm64/sm64_save_file.bin` (512 bytes exactly), no `.tmp` left behind.
+
+**GameCube memory card**, emulated card image:
+
+```
+directory entry : SM6401  sm64_save_file.bin   2 blocks
+sector 0        : SM64  seq=9  len=0x200  sum=62f0db33
+sector 1        : SM64  seq=8  len=0x200  sum=bf72dacd
+```
+
+The sequence numbers alternate, so nine saves during a 25 s boot each went to the sector that
+was *not* the newest. The alternation is demonstrated rather than assumed.
+
+Not covered by either: this Dolphin build emulates no GameCube SD adapter, so `port2` — the
+SD2SP2 path — is code-identical but untested off hardware.
 
 ## Goal
 
@@ -133,14 +167,11 @@ restart the game every session.
    console, while still tolerating them on read so a file imported from a PC build is not
    rejected.
 
-7. **GameCube memory card** — *no longer optional; this is now the main gap.* An SD2SP2 or an
-   SD Gecko is a mod, while a memory card is what a GameCube ships with, so without this a
-   stock console cannot save at all. It is a genuinely separate implementation, not a path
-   change: `CARD_Init("SM64", "00")`, `CARD_Mount`, `CARD_Open`/`CARD_Create`, `CARD_Write` in
-   8 KB-aligned blocks, plus a banner and icon for the memory-card manager. The 512-byte EEPROM
-   image fits in one block with room to spare. Slot A first, then slot B. Keep libfat ahead of
-   it in the probe order when both are present, so a save carried from the PC build still
-   wins. Original:
+7. **GameCube memory card** — ✅ **done**, see above. One piece is deliberately left out: the
+   file has no **banner or icon**, so the system's memory card manager lists it without a
+   picture and with a blank comment. That needs a banner bitmap and a 64-byte comment embedded
+   in the file, pointed at with `CARD_SetCommentAddress`, and it costs another block. Purely
+   cosmetic, and it belongs with the packaging work in STORY-016. The original plan read:
    `CARD_Init("SM64", "00")`, `CARD_Mount`, `CARD_Open`/`CARD_Create`, `CARD_Write` in
    8 KB-aligned blocks. Provide an icon and a file comment for the memory-card manager screen.
 

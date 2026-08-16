@@ -44,7 +44,7 @@ the game code**. That is the guiding rule for the whole roadmap.
 | **M1 — It draws** | A textured triangle on screen through GX | 006 → 009 — ✅ **geometry on screen**, textures done |
 | **M2 — The intro** | The Mario logo / title screen render correctly | 010, 011 — ✅ **the game renders**: levels, models, HUD, correct perspective |
 | **M3 — It plays** | Controller + audio: Mario is playable in the castle lobby | 012 → 014 |
-| **M4 — It saves** | Persistent save file, config read at boot | 015 |
+| **M4 — It saves** | Persistent save file, config read at boot | 015 — ✅ **reached**: SD and GameCube memory card, crash-safe |
 | **M5 — It ships** | `boot.dol` + `meta.xml` installable from the Homebrew Channel | 016, 017 |
 | **M6 — It runs well** | Stable 30 fps, GameCube supported, polish | 018, 019 |
 
@@ -69,14 +69,13 @@ the game code**. That is the guiding rule for the whole roadmap.
 
 ### Epic 3 — Audio
 - [012 — 32 kHz stereo audio backend (AI DMA)](012-audio-backend-ai-dma.md) ✅ **done**
-- [015 — Saves and configuration on SD / memory card](015-save-config-storage.md) 🟡 SD works and is verified; the GameCube memory card remains
 
 ### Epic 4 — Input
 - [013 — GameCube controller (`PAD`) → `OSContPad`](013-gamecube-controller-pad.md) 🟡 **implemented, unvalidated**
 - [014 — Wii controllers (`WPAD`): Wiimote+Nunchuk, Classic, GC](014-wii-controllers-wpad.md)
 
 ### Epic 5 — Storage
-- [015 — Saves and configuration on SD / memory card](015-save-config-storage.md)
+- [015 — Saves and configuration on SD / memory card](015-save-config-storage.md) ✅ **done** — SD and GameCube memory card, both crash-safe and verified
 
 ### Epic 6 — Distribution
 - [016 — Packaging: `.dol`, `meta.xml` and a `make dist` target](016-packaging-dol-homebrew.md)
