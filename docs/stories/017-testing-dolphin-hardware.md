@@ -1,10 +1,39 @@
 # STORY-017 — Test strategy: Dolphin first, then real hardware
 
 **Epic:** 6 — Distribution
-**Status:** 🟡 Dolphin loop running and already paying off — hardware protocol still to run
+**Status:** 🟢 **It runs on a real GameCube** (2026-08-16). Dolphin loop running; the formal
+hardware protocol below still to be worked through
 **Depends on:** STORY-002 *(set this up with the very first `.dol`)*
 **Estimate:** S (1-2 d to set up, then continuous)
 **Platform:** GC + Wii
+
+## First hardware run — 2026-08-16
+
+**A real GameCube, booted through Swiss from an SD2SP2 on Serial Port 2.**
+
+| | Result |
+|---|---|
+| Boots | ✅ |
+| Audio | ✅ no crackle reported |
+| Picture | ✅ |
+| Frame rate | ✅ smooth |
+
+This is the result the whole Dolphin loop existed to reach, and it clears the risks Dolphin
+structurally cannot report: a missing `DCFlushRange` leaves the GP or the DSP reading stale
+cache lines, a misaligned buffer breaks DMA, and an underfed audio DMA crackles. **None of
+them showed.** Every `DCFlushRange` and every 32-byte alignment in the GX and AI backends was
+written blind against the hardware manual; they were right.
+
+What did not survive contact, and now has a ticket each:
+
+- [STORY-020](020-shadow-decal-flicker.md) — tree shadows shimmer and drop out. Reported here
+  first: the Z-decal bias is missing, and z-fighting on a large flat ground is far more visible
+  on a CRT than in a scaled-up emulator window.
+- [STORY-021](021-texture-dropouts.md) — textures drop in and out with camera movement. Already
+  known under Dolphin; hardware confirms it is not an emulator artefact.
+
+Still unverified on hardware: a long session for audio drift, the memory card save surviving a
+power cycle, 50/60 Hz switching, and overscan on a CRT.
 
 ## Context
 

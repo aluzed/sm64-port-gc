@@ -40,12 +40,12 @@ the game code**. That is the guiding rule for the whole roadmap.
 
 | Milestone | Content | Stories |
 |---|---|---|
-| **M0 — It builds** | `make TARGET_WII=1` produces a `.dol` that boots to a black screen without crashing | 001 → 005 — ✅ **reached under Dolphin**, hardware pending |
+| **M0 — It builds** | `make TARGET_WII=1` produces a `.dol` that boots to a black screen without crashing | 001 → 005 — ✅ **reached on real hardware** |
 | **M1 — It draws** | A textured triangle on screen through GX | 006 → 009 — ✅ **geometry on screen**, textures done |
 | **M2 — The intro** | The Mario logo / title screen render correctly | 010, 011 — ✅ **the game renders**: levels, models, HUD, correct perspective |
-| **M3 — It plays** | Controller + audio: Mario is playable in the castle lobby | 012 → 014 |
+| **M3 — It plays** | Controller + audio: Mario is playable in the castle lobby | 012, 013 — ✅ **on a real GameCube**; 014 (Wii remotes) to do |
 | **M4 — It saves** | Persistent save file, config read at boot | 015 — ✅ **reached**: SD and GameCube memory card, crash-safe |
-| **M5 — It ships** | `boot.dol` + `meta.xml` installable from the Homebrew Channel | 016 — ✅ packaged; 017 — hardware still untouched |
+| **M5 — It ships** | `boot.dol` + `meta.xml` installable from the Homebrew Channel | 016 — ✅ packaged; 017 — ✅ launched from Swiss on hardware |
 | **M6 — It runs well** | Stable 30 fps, GameCube supported, polish | 018, 019 |
 
 ## Stories
@@ -71,7 +71,7 @@ the game code**. That is the guiding rule for the whole roadmap.
 - [012 — 32 kHz stereo audio backend (AI DMA)](012-audio-backend-ai-dma.md) ✅ **done**
 
 ### Epic 4 — Input
-- [013 — GameCube controller (`PAD`) → `OSContPad`](013-gamecube-controller-pad.md) 🟡 **implemented, unvalidated**
+- [013 — GameCube controller (`PAD`) → `OSContPad`](013-gamecube-controller-pad.md) ✅ **done** — validated on a real GameCube
 - [014 — Wii controllers (`WPAD`): Wiimote+Nunchuk, Classic, GC](014-wii-controllers-wpad.md)
 
 ### Epic 5 — Storage
@@ -79,11 +79,15 @@ the game code**. That is the guiding rule for the whole roadmap.
 
 ### Epic 6 — Distribution
 - [016 — Packaging: `.dol`, `meta.xml` and a `make dist` target](016-packaging-dol-homebrew.md) ✅ **done** — `make dist` on both targets
-- [017 — Test strategy: Dolphin first, then real hardware](017-testing-dolphin-hardware.md) 🟡 **loop running**
+- [017 — Test strategy: Dolphin first, then real hardware](017-testing-dolphin-hardware.md) 🟢 **it runs on a real GameCube**; formal protocol pending
 
 ### Epic 7 — Performance and polish
 - [018 — Optimisation: GX display lists, cache, GameCube support](018-performance-optimisation.md)
 - [019 — Polish: crash handler, clean exit, release](019-polish-stability-release.md)
+
+### Open defects
+- [020 — Shadows flicker and drop out](020-shadow-decal-flicker.md) — found on hardware; the Z-decal bias is missing
+- [021 — Textures drop in and out with camera movement](021-texture-dropouts.md) — five causes ruled out by measurement; the projection fit is the remaining lead
 
 ## Dependency graph
 

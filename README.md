@@ -46,18 +46,20 @@ version control, and compiled binaries must not be redistributed.
 
 ### GameCube / Wii (devkitPPC)
 
-> **Status: playable, not finished.** `make TARGET_WII=1` and `make TARGET_GC=1` produce a
-> `.dol` that boots and runs at the correct 30 fps under Dolphin, in 60 Hz and in 50 Hz alike.
-> In place: build system, video (libogc VIDEO/GX), GX renderer with textures and the colour
-> combiner translated to TEV, distance fog, 32 kHz stereo audio, GameCube controller, and
-> saves on both a memory card and SD.
+> **Status: it runs on a real GameCube.** Booted through Swiss on 2026-08-16: picture, sound,
+> controller and a smooth 30 fps. `make TARGET_WII=1` and `make TARGET_GC=1` produce a `.dol`
+> that runs at the correct rate in 60 Hz and 50 Hz alike. In place: build system, video
+> (libogc VIDEO/GX), GX renderer with textures and the colour combiner translated to TEV,
+> distance fog, 32 kHz stereo audio, GameCube controller, and saves on both a memory card and
+> SD.
 >
-> Still missing: **Wii Remote support**, video mode selection and 16:9, and two combiner
-> effects (noise dithering, Z decal validation). Two rendering defects are open: the water
-> surface flickers out for an instant, and some surfaces occasionally lose their texture.
+> Still missing: **Wii Remote support**, video mode selection, 16:9 and 480p, and noise
+> dithering. Two rendering defects are open —
+> [shadows flicker](docs/stories/020-shadow-decal-flicker.md) and
+> [textures drop out with camera movement](docs/stories/021-texture-dropouts.md).
 >
-> **Nothing has ever run on real hardware.** Dolphin hides exactly the class of fault that
-> bites on a console. Track progress in [`docs/stories/`](docs/stories/README.md).
+> The Wii build has never run on a Wii. Track progress in
+> [`docs/stories/`](docs/stories/README.md).
 
 #### Dependencies
 
