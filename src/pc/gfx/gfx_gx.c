@@ -47,12 +47,23 @@
 #define GFX_GX_TEXTURES_IMPLEMENTED 1
 #endif
 
-// Per-batch hardware perspective projection. Off: it fed the depth buffer a
-// different convention from the CPU path, so batches sorted against each other.
-// Reinstating it is STORY-009's job, and it is what perspective-correct texture
-// interpolation needs -- but the two paths have to agree on depth first.
+// Per-batch hardware perspective projection.
+//
+// It was off for a while because it fed the depth buffer a convention the CPU
+// path did not share, so batches sorted against each other. The two now agree
+// (see gfx_gx_setup_perspective), and it is back on for two reasons beyond
+// perspective-correct texture interpolation:
+//
+// gfx_pc does not clip at the near plane -- gfx_sp_tri1 only rejects triangles
+// whose three vertices share a rejection bit -- so a triangle straddling it
+// arrives with w <= 0 on some vertices. Dividing that on the CPU produces
+// nonsense positions and a nonsense depth, which stamps the buffer and makes
+// everything drawn afterwards lose the test. Feeding view space instead lets
+// the GP's clipper handle it, which is what it is for.
+//
+// Set to 0 to fall back to a CPU divide everywhere.
 #ifndef GFX_GX_HW_PERSP
-#define GFX_GX_HW_PERSP 0
+#define GFX_GX_HW_PERSP 1
 #endif
 
 // Worst case is: one stage to stash texel1, two for the general colour form,

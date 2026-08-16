@@ -653,8 +653,12 @@ endif
 
 GFX_CFLAGS += -DWIDESCREEN
 
-CC_CHECK := $(CC) -fsyntax-only -fsigned-char -Wall -Wextra -Wno-format-security -D_LANGUAGE_C $(DEF_INC_CFLAGS) $(PLATFORM_CFLAGS) $(GFX_CFLAGS)
-CFLAGS := $(OPT_FLAGS) -D_LANGUAGE_C $(DEF_INC_CFLAGS) $(PLATFORM_CFLAGS) $(GFX_CFLAGS) -fno-strict-aliasing -fwrapv
+# Appended last so `make EXTRA_CFLAGS="-DGFX_GX_HW_PERSP=0"` wins over the
+# defaults. The GX debug views are listed in docs/stories/010.
+EXTRA_CFLAGS ?=
+
+CC_CHECK := $(CC) -fsyntax-only -fsigned-char -Wall -Wextra -Wno-format-security -D_LANGUAGE_C $(DEF_INC_CFLAGS) $(PLATFORM_CFLAGS) $(GFX_CFLAGS) $(EXTRA_CFLAGS)
+CFLAGS := $(OPT_FLAGS) -D_LANGUAGE_C $(DEF_INC_CFLAGS) $(PLATFORM_CFLAGS) $(GFX_CFLAGS) $(EXTRA_CFLAGS) -fno-strict-aliasing -fwrapv
 
 ASFLAGS := -I include -I $(BUILD_DIR) $(foreach d,$(DEFINES),--defsym $(d))
 
