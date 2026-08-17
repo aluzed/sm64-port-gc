@@ -232,12 +232,23 @@ does not open the pause menu on the way out.
 
 #### Reporting a crash
 
-On a CPU exception the console shows the faulting address (SRR0). Translate it to a function
-name with the map file produced by the build:
+On a CPU exception the console paints a black screen with the exception type, the faulting
+address (`PC (SRR0)`), the link register, `DSISR` / `DAR`, and a call stack — instead of freezing
+silently.
+
+Translate any of those addresses with the ELF the build left behind:
 
 ```sh
-powerpc-eabi-addr2line -e build/us_wii/sm64.us.elf <address>
+powerpc-eabi-addr2line -f -e build/us_gc/sm64.us.elf 800a944c
+bhv_mario_update
+src/game/object_list_processor.c:269
 ```
+
+`-f` adds the function name. The console builds carry `-g`, so you get a file and a line as
+well; it costs nothing in the shipped binary, since debug information lives in sections
+`elf2dol` does not copy — the `.dol` is byte-identical either way.
+
+Start with `PC`, then walk the call stack from the top. Include the whole screen in a bug report.
 
 ### Debugging
 

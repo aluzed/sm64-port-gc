@@ -29,8 +29,8 @@ information when it crashes, so the port is usable day to day.
 - [x] The console's **POWER** button powers off cleanly (save config, then
       `SYS_ResetSystem(SYS_POWEROFF, …)`). *The save was the bug; see below.*
 - [x] The console's **RESET** button restarts cleanly. *Written; not yet run on hardware.*
-- [ ] On a CPU exception, a readable screen shows the exception type, the faulting address and
-      a call stack — instead of a silent freeze.
+- [x] On a CPU exception, a readable screen shows the exception type, the faulting address and
+      a call stack — instead of a silent freeze. *Written; nobody has watched it run.*
 - [ ] No detectable memory leak over a 30-minute session with repeated level changes (free
       memory stable, measured with the STORY-005 instrumentation).
 - [ ] A `v0.1.0` release is tagged, with release notes listing what works and what does not.
@@ -129,7 +129,37 @@ Documented in `README.md` under *Quitting*.
 
 ## What is not done
 
-- **Task 4, the exception handler.** Untouched.
+### Task 4: the crash screen
+
+libogc exposes no exception API in its `ogc/` headers, which is where the task's phrasing
+("libogc ships a default exception display") runs out. What it does expose, in
+`tuxedo/ppc/exception.h`, is the function pointer its default handler dispatches through:
+`PPCExcptCurPanicFn`. The hook is a plain assignment.
+
+The screen shows the exception type, `PC` (SRR0), `LR`, `MSR`, `CR`, `DSISR`, `DAR`, and a call
+stack walked from the PowerPC back chain — `[r1]` is the caller's frame and `[r1 + 4]` its
+return address, bounded to ten frames and to plausible RAM so the handler cannot fault a second
+time inside itself.
+
+Three rules follow from running in exception context and never returning, and each is a way this
+turns back into a silent freeze:
+
+- **no allocation** — `CON_Init` takes a framebuffer we already own, unlike `CON_InitEx`;
+- **no GX** — the GP may be mid-command and its FIFO is the least trustworthy thing in the
+  machine at that point. The console writes to the XFB directly;
+- **no filesystem** — a crash log on the card would be worth having, and is exactly the kind of
+  call that hangs instead.
+
+**`-g` is now on for console builds.** Without it `addr2line` resolves an address to a function
+name and prints `??:?` for the line, so the README's procedure delivered half of what it
+promised. It is free where it matters: `-g` emits only non-allocatable sections, `elf2dol` drops
+them, and the shipped `.dol` was verified **byte-identical** with and without. Code generation at
+`-O2` is unchanged. The `.elf` grows from 15 MB to 20 MB on disk.
+
+**Not yet seen running.** `-DGFX_OGC_DEBUG_FORCE_CRASH` writes to `0xC0000000` a few seconds
+after boot to trigger it on demand, and the check is repeatable, but nobody has watched the
+screen appear yet. Until someone has, this is code that compiles rather than a crash handler:
+`DAR` should read `c0000000` exactly.
 - **Task 5, the leak hunt.** The named suspect is cleared; the 30-minute measurement is not run.
 
   The story called `gfx_pc.c` resetting `gfx_texture_cache.pool_pos` to 0 "the most likely leak

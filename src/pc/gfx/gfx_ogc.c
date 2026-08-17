@@ -17,8 +17,14 @@
 #include <gccore.h>
 #include <ogcsys.h>
 #include <ogc/lwp_watchdog.h> // gettime, ticks_to_microsecs
+// The exception hook. Not part of libogc's ogc/ headers: the only public way to
+// intercept a CPU exception is the function pointer its default handler
+// dispatches through, declared here. See ogc_panic below.
+#include <tuxedo/ppc/exception.h>
+#include <ogc/machine/processor.h>   // mfspr, for DSISR and DAR
 
 #include <malloc.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -129,6 +135,92 @@ static void gfx_ogc_shutdown(void) {
     // installs a return stub, so exit() goes back to the Homebrew Channel;
     // SYS_ResetSystem in the finisher is the fallback when it does not.
     exit(0);
+}
+
+// -- crash screen -----------------------------------------------------------
+//
+// Without this a CPU exception is a silent freeze, and the addr2line procedure
+// the README documents has nothing to feed on. libogc exposes no handler API in
+// its public headers, but it does expose the function pointer its default
+// handler dispatches through -- PPCExcptCurPanicFn -- so the hook is a plain
+// assignment.
+//
+// Everything below runs in exception context, after the machine has already
+// gone wrong, and never returns. The rules that follow from that:
+//
+//  * no allocation. CON_Init takes a framebuffer we already own, unlike
+//    CON_InitEx which allocates one;
+//  * no GX. The GP may be mid-command and its FIFO is the least trustworthy
+//    thing in the system at this point. The console writes to the XFB directly;
+//  * no filesystem. Writing a crash log to the card would be worth having, and
+//    it is exactly the kind of call that turns a readable crash into a hang.
+
+static const char *ogc_exception_name(unsigned exid) {
+    switch (exid) {
+        case PPC_EXCPT_RESET:   return "System reset";
+        case PPC_EXCPT_MCHK:    return "Machine check";
+        case PPC_EXCPT_DSI:     return "DSI (bad data address)";
+        case PPC_EXCPT_ISI:     return "ISI (bad instruction address)";
+        case PPC_EXCPT_ALIGN:   return "Alignment";
+        case PPC_EXCPT_UNDEF:   return "Illegal instruction";
+        case PPC_EXCPT_FPU:     return "Floating point";
+        case PPC_EXCPT_DECR:    return "Decrementer";
+        case PPC_EXCPT_TRACE:   return "Trace";
+        case PPC_EXCPT_PM:      return "Performance monitor";
+        case PPC_EXCPT_BKPT:    return "Breakpoint";
+        default:                return "Unknown";
+    }
+}
+
+static void ogc_panic(unsigned exid, PPCContext *ctx) {
+    // Take over the display. The game is dead, so xfb[0] is free whatever the
+    // flip state was.
+    CON_Init(xfb[0], 16, 16,
+             rmode->fbWidth - 32, rmode->xfbHeight - 32,
+             rmode->fbWidth * VI_DISPLAY_PIX_SZ);
+    VIDEO_SetNextFramebuffer(xfb[0]);
+    VIDEO_SetBlack(FALSE);
+    VIDEO_Flush();
+    VIDEO_WaitVSync();
+
+    printf("\n\n  Super Mario 64 -- crash\n\n");
+    printf("  %s\n\n", ogc_exception_name(exid));
+
+    if (ctx != NULL) {
+        printf("  PC (SRR0) %08lx   <- translate this one first\n", (unsigned long) ctx->pc);
+        printf("  LR        %08lx\n", (unsigned long) ctx->lr);
+        printf("  MSR       %08lx   CR  %08lx\n",
+               (unsigned long) ctx->msr, (unsigned long) ctx->cr);
+        printf("  DSISR     %08lx   DAR %08lx\n",
+               (unsigned long) mfspr(18), (unsigned long) mfspr(19));
+
+        // Walk the back chain. The PowerPC ABI puts the caller's stack pointer
+        // at [r1] and its return address at [r1 + 4], so a bounded walk gives a
+        // real call stack -- which is the difference between "it crashed" and a
+        // bug report someone can act on.
+        printf("\n  Call stack:\n");
+        u32 sp = ctx->gpr[1];
+        for (int depth = 0; depth < 10; depth++) {
+            // Anything outside cached MEM1/MEM2 is not a stack frame; stop
+            // rather than fault a second time inside the crash handler.
+            if (sp < 0x80000000u || sp >= 0x94000000u || (sp & 3) != 0) {
+                break;
+            }
+            const u32 lr = *(u32 *) (sp + 4);
+            if (lr == 0) {
+                break;
+            }
+            printf("    %08lx\n", (unsigned long) lr);
+            sp = *(u32 *) sp;
+        }
+    }
+
+    printf("\n  powerpc-eabi-addr2line -e sm64.us.elf <address>\n");
+    printf("  Reset or power off to continue.\n");
+
+    for (;;) {
+        VIDEO_WaitVSync();
+    }
 }
 
 // -- init -------------------------------------------------------------------
@@ -275,6 +367,11 @@ static void gfx_ogc_init(const char *game_name, bool start_in_fullscreen) {
     SYS_SetPowerCallback(on_power_pressed);
 #endif
 
+    // After the video is up, because the handler paints onto xfb[0] and needs
+    // rmode. Before anything else runs, so a crash during bring-up of the rest
+    // still has somewhere to report itself.
+    PPCExcptCurPanicFn = ogc_panic;
+
     start_ticks = gettime();
     fifty_hz = video_is_50hz();
     next_frame_ticks = start_ticks + microsecs_to_ticks(GAME_FRAME_USEC);
@@ -302,6 +399,17 @@ static void gfx_ogc_main_loop(void (*run_one_game_iter)(void)) {
     // The loop is paced by VIDEO_WaitVSync() in swap_buffers_end, so there is
     // no timing logic here.
     while (!should_quit) {
+#ifdef GFX_OGC_DEBUG_FORCE_CRASH
+        // Faults on purpose, a few seconds in, to check that ogc_panic really
+        // paints a readable screen. A crash handler nobody has watched run is
+        // not a crash handler. Behind a flag so the check stays repeatable.
+        {
+            static int countdown = 120;
+            if (--countdown <= 0) {
+                *(volatile u32 *) 0xC0000000 = 0xDEADBEEF;
+            }
+        }
+#endif
         gfx_perf_frame_begin();
         run_one_game_iter();
         gfx_perf_frame_end();

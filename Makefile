@@ -210,6 +210,17 @@ ifeq ($(TARGET_N64),0)
   ifeq ($(TARGET_WEB),1)
     OPT_FLAGS += -g4 --source-map-base http://localhost:8080/
   endif
+  ifeq ($(TARGET_OGC),1)
+    # Debug info, and it is free where it matters. -g emits only non-allocatable
+    # sections, which elf2dol drops: the .dol that ships is byte-identical, and
+    # nothing about code generation changes at -O2.
+    #
+    # What it buys is the crash screen. Without it addr2line resolves an
+    # address to a function name and prints "??:?" for the line, so a bug report
+    # names a function and stops there. That is the difference between an
+    # actionable report and a shrug, for the cost of a larger .elf on disk.
+    OPT_FLAGS += -g
+  endif
 endif
 
 
