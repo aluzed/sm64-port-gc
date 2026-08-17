@@ -1,7 +1,8 @@
 # STORY-011 — Video modes, resolution, PAL/NTSC and 16:9
 
 **Epic:** 2 — GX rendering
-**Status:** 🟡 Cadence, mode selection, 480p and 16:9 done; **overscan remains**
+**Status:** 🟡 Cadence, mode selection, 480p, 16:9 and the copy filter done; overscan **wired but
+untuned** — it needs a real television, which no emulator can stand in for
 **Depends on:** STORY-004, STORY-009
 **Estimate:** M (2-3 d)
 **Platform:** GC + Wii
@@ -133,12 +134,52 @@ ratio and speed, whatever my TV and console settings.
    EFB→XFB copy filter, which smooths vertically — useful in interlaced modes to reduce
    flicker on thin UI lines.
 
+## Where tasks 4, 5 and 6 actually stand
+
+### Task 4 was already satisfied, by the header rather than by us
+
+"Make it a runtime choice rather than a compile-time one" reads like outstanding work, and it
+is not. With `WIDESCREEN` defined, the macros in `include/gfx_dimensions.h` are driven by the
+**runtime** `gfx_current_dimensions.aspect_ratio`, and at 4:3 they reduce exactly to the
+non-widescreen branch: `160 - 120 × (4/3) + v` is `v`.
+
+So the `-DWIDESCREEN` build is a superset that follows whatever aspect the console reports —
+`CONF_GetAspectRatio()` on Wii, `configWidescreen` on GameCube — and the unconditional
+`-DWIDESCREEN` in the Makefile is what makes the runtime switch work at all. Turning it into an
+option and defaulting it off would remove 16:9 support, not add a choice. Nothing to do, and
+worth recording so it is not "fixed" later.
+
+### Task 5, overscan: wired, deliberately inert by default
+
+`overscan` is a configuration value in pixels, inset on every edge, saved with everything else.
+It defaults to **0**, which draws exactly as before.
+
+It is applied in `gfx_gx_set_viewport` and `gfx_gx_set_scissor` — the one place both rectangles
+are converted — because `gfx_pc` reissues them every frame and anything set once at init is
+overwritten by the first frame that draws. Every rectangle is scaled about the centre by the
+same factor, so the HUD keeps its position relative to the scene and no caller has to know.
+
+The picture shrinks rather than moving: a television crops both edges, so shifting the image
+only trades a lost right edge for a lost left one. The alternative — moving the VI window with
+`viWidth` / `viXOrigin` — keeps full resolution, but a wrong value there can leave a set with no
+picture at all. This costs a little resolution and cannot black out a screen, which is the right
+trade for a value nobody has been able to try yet.
+
+**Untuned on purpose.** A value that suits one set is wrong on the next, and this story's own
+note says an emulator cannot stand in for a television. The mechanism is there; the number is
+the player's.
+
+### Task 6 was already done
+
+`GX_SetCopyFilter(rmode->aa, rmode->sample_pattern, GX_TRUE, rmode->vfilter)` has been in
+`gfx_ogc.c` since the video backend landed.
+
 ## Files touched
 
 - `src/pc/gfx/gfx_ogc.c`
-- `src/pc/gfx/gfx_gx.c` (EFB→XFB copy parameters)
+- `src/pc/gfx/gfx_gx.c` (EFB→XFB copy parameters; the overscan inset)
 - `src/pc/configfile.c` / `configfile.h` (overscan, 16:9 on GC — see STORY-015)
-- `Makefile` (conditional `-DWIDESCREEN`)
+- `Makefile` — nothing to do, see task 4 above
 
 ## Notes and risks
 

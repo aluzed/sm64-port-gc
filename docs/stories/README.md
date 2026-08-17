@@ -65,7 +65,7 @@ the game code**. That is the guiding rule for the whole roadmap.
 - [008 — Textures: GX swizzle, cache and wrap modes](008-gx-textures.md) ✅ **done**
 - [009 — Vertex format and triangle submission](009-vertex-format-draw-triangles.md) ✅ **done** — hardware perspective on, near-plane clipping handled by the GP
 - [010 — Effects: fog, noise, alpha compare, Z decals](010-effects-fog-noise-alpha.md) 🟡 all four implemented; **validation on screen pending**
-- [011 — Video modes, resolution, PAL/NTSC and 16:9](011-video-modes-resolution.md) 🟡 cadence, mode selection, 480p and 16:9 done; overscan remains
+- [011 — Video modes, resolution, PAL/NTSC and 16:9](011-video-modes-resolution.md) 🟡 cadence, mode selection, 480p, 16:9 and the copy filter done; overscan wired but untuned — it needs a real television
 
 ### Epic 3 — Audio
 - [012 — 32 kHz stereo audio backend (AI DMA)](012-audio-backend-ai-dma.md) ✅ **done**

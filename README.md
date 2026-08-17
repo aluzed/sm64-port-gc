@@ -182,6 +182,19 @@ when a memory card is present.
 
 With no storage at all the game runs normally and simply does not save.
 
+#### Settings
+
+`sm64config.txt` sits beside the save, and is written back out when it is missing.
+
+| Key | Default | What it does |
+|---|---|---|
+| `widescreen` | `false` | GameCube only — a Wii is asked for its own setting. Sets the picture's aspect, which the HUD and the field of view follow |
+| `overscan` | `0` | Pixels of margin inset on every edge. Televisions crop 5–10 % of the picture; raise this until nothing important sits off the tube |
+
+Overscan shrinks the image toward the centre rather than moving it, because a set crops both
+edges — shifting would only trade a lost right edge for a lost left one. Start around `8` on a
+CRT and adjust; flat panels usually need `0`.
+
 #### Controls
 
 | GameCube | Wii Classic | Wiimote + Nunchuk | N64 |

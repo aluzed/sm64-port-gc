@@ -130,9 +130,27 @@ Documented in `README.md` under *Quitting*.
 ## What is not done
 
 - **Task 4, the exception handler.** Untouched.
-- **Task 5, the leak hunt.** Untouched. The story names the likely site — `gfx_pc.c` resetting
-  `gfx_texture_cache.pool_pos` to 0 without releasing the GX buffers behind it — and that is
-  still the place to look first.
+- **Task 5, the leak hunt.** The named suspect is cleared; the 30-minute measurement is not run.
+
+  The story called `gfx_pc.c` resetting `gfx_texture_cache.pool_pos` to 0 "the most likely leak
+  site in the whole port". It is not a leak. The whole OGC layer has exactly two allocation
+  sites — the GP FIFO, allocated once at init, and texture data — and the texture path frees
+  before it reallocates, and only reallocates when the size changes:
+
+  ```c
+  if (t->data == NULL || t->data_size != size) {
+      free(t->data);
+      t->data = memalign(32, size);
+  ```
+
+  The rotation is safe for a second reason as well: `MAX_TEXTURES` is 512, exactly the size of
+  `gfx_pc`'s node pool, and `gfx_pc` calls `new_texture()` only for a node it has never used.
+  On wrap it reuses the ids, so the GX pool never turns over at all.
+
+  Read rather than measured, deliberately: allocation ownership is a structural property of the
+  source, which is what lesson 4 in the roadmap says to settle by reading. What still needs the
+  30-minute session is the acceptance criterion itself — *no detectable* leak — and that has to
+  wait for hardware and the STORY-005 instrumentation.
 - **Tasks 6 and 7, the release.** Correctly blocked: the story's own note says not to tag until
   STORY-017 records a hardware validation, and none of this has run on a console.
 

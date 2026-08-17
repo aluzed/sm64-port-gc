@@ -3,6 +3,11 @@
 
 extern bool         configFullscreen;
 extern bool         configWidescreen;
+// Overscan margin in framebuffer pixels, inset on every edge. Televisions crop
+// 5-10% of the picture; this pulls the whole image inward so nothing lands off
+// the tube. Zero by default, which draws exactly as before -- a value that
+// suits one set is wrong on the next, so it has to be the player's to choose.
+extern unsigned int configOverscan;
 extern unsigned int configKeyA;
 extern unsigned int configKeyB;
 extern unsigned int configKeyStart;

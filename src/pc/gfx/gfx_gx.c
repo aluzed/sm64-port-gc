@@ -25,6 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "../configfile.h"
 #include "gfx_cc.h"
 #include "gfx_gx.h"
 #include "gfx_ogc.h"
@@ -987,7 +988,46 @@ static void gfx_gx_set_zmode_decal(bool zmode_decal) {
     }
 }
 
+// Overscan: shrink the picture toward the centre of the framebuffer.
+//
+// Televisions crop the edges, so the answer is to draw a smaller image rather
+// than to move the one we have -- shifting it only trades a lost right edge for
+// a lost left one. Every rectangle gfx_pc asks for is scaled about the centre
+// by the same factor, so the HUD keeps its position relative to the scene and
+// nothing has to know this is happening.
+//
+// Applied here, at the one place viewports and scissors are converted, because
+// gfx_pc reissues both every frame: anything set once at init is overwritten by
+// the first frame that draws.
+//
+// The alternative -- moving the VI window with viWidth/viXOrigin -- would keep
+// full resolution, but a wrong value there can leave a set with no picture at
+// all. This costs a little resolution and cannot black out a screen.
+static void gfx_gx_inset_rect(int *x, int *y, int *width, int *height) {
+    const int margin = (int) configOverscan;
+    if (margin <= 0) {
+        return;
+    }
+
+    const int fb_w = (int) gfx_ogc_framebuffer_width();
+    const int fb_h = (int) gfx_ogc_framebuffer_height();
+    if (fb_w <= 2 * margin || fb_h <= 2 * margin) {
+        return;   // a margin that would swallow the screen is not honoured
+    }
+
+    // Scale about the centre, in the framebuffer's own coordinates.
+    const float sx = (float) (fb_w - 2 * margin) / (float) fb_w;
+    const float sy = (float) (fb_h - 2 * margin) / (float) fb_h;
+
+    *x = margin + (int) ((float) *x * sx);
+    *y = margin + (int) ((float) *y * sy);
+    *width = (int) ((float) *width * sx);
+    *height = (int) ((float) *height * sy);
+}
+
 static void gfx_gx_set_viewport(int x, int y, int width, int height) {
+    gfx_gx_inset_rect(&x, &y, &width, &height);
+
     // gfx_pc works in OpenGL conventions, with the origin at the bottom left.
     // GX measures from the top left. Getting this wrong flips the image or
     // clips the wrong edge, so the conversion lives here and nowhere else.
@@ -997,6 +1037,8 @@ static void gfx_gx_set_viewport(int x, int y, int width, int height) {
 }
 
 static void gfx_gx_set_scissor(int x, int y, int width, int height) {
+    gfx_gx_inset_rect(&x, &y, &width, &height);
+
     const int fb_height = (int) gfx_ogc_framebuffer_height();
     GX_SetScissor((u32) x, (u32) (fb_height - y - height), (u32) width, (u32) height);
 }

@@ -47,11 +47,13 @@ unsigned int configKeyStickRight = 0x20;
 // Console only. A Wii reports its own aspect through CONF_GetAspectRatio, but
 // a GameCube has no such setting, so the player has to say.
 bool configWidescreen            = false;
+unsigned int configOverscan      = 0;
 
 
 static const struct ConfigOption options[] = {
     {.name = "fullscreen",     .type = CONFIG_TYPE_BOOL, .boolValue = &configFullscreen},
     {.name = "widescreen",     .type = CONFIG_TYPE_BOOL, .boolValue = &configWidescreen},
+    {.name = "overscan",       .type = CONFIG_TYPE_UINT, .uintValue = &configOverscan},
     {.name = "key_a",          .type = CONFIG_TYPE_UINT, .uintValue = &configKeyA},
     {.name = "key_b",          .type = CONFIG_TYPE_UINT, .uintValue = &configKeyB},
     {.name = "key_start",      .type = CONFIG_TYPE_UINT, .uintValue = &configKeyStart},
