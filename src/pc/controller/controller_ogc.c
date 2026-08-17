@@ -7,7 +7,12 @@
 // PR/gbi.h that ultra64.h brings along. Including the narrow header keeps both
 // worlds in the same translation unit.
 //
-// Wii Remote / Nunchuk / Classic Controller support is STORY-014.
+// Wii Remote, Nunchuk and Classic Controller support lives in
+// controller_wpad.c, behind a header that names no libogc type. WPAD's own
+// header walks into the same collision by a longer route -- <wiiuse/wpad.h> ->
+// <bte/bte.h> -> <gccore.h> -> <ogc/gx.h> -- so it cannot be included here
+// either. This file is the only one that knows both the neutral vocabulary and
+// the N64 button bits, which is exactly its job.
 
 #include <ogc/pad.h>
 
@@ -15,6 +20,7 @@
 
 #include "controller_api.h"
 #include "controller_ogc.h"
+#include "controller_wpad.h"
 
 // The GameCube stick reads roughly +/-72 once libogc's calibration is applied,
 // while the game expects the N64 range of +/-80 (controller_sdl.c divides the
@@ -42,12 +48,67 @@ static int clampi(int v, int lo, int hi) {
 
 static void ogc_init(void) {
     PAD_Init();
+#ifdef TARGET_WII
+    ogc_wpad_init();
+#endif
 }
+
+#ifdef TARGET_WII
+// Translates the neutral button set from controller_wpad.c onto the N64 bits.
+// Splitting the mapping in two -- peripheral to neutral there, neutral to N64
+// here -- is what keeps the two header worlds apart; see the note at the top.
+static void ogc_apply_wpad(const struct WpadInput *in, OSContPad *pad) {
+    if (in->buttons & WPAD_IN_A)       pad->button |= A_BUTTON;
+    if (in->buttons & WPAD_IN_B)       pad->button |= B_BUTTON;
+    if (in->buttons & WPAD_IN_Z)       pad->button |= Z_TRIG;
+    if (in->buttons & WPAD_IN_R)       pad->button |= R_TRIG;
+    if (in->buttons & WPAD_IN_START)   pad->button |= START_BUTTON;
+
+    if (in->buttons & WPAD_IN_C_UP)    pad->button |= U_CBUTTONS;
+    if (in->buttons & WPAD_IN_C_DOWN)  pad->button |= D_CBUTTONS;
+    if (in->buttons & WPAD_IN_C_LEFT)  pad->button |= L_CBUTTONS;
+    if (in->buttons & WPAD_IN_C_RIGHT) pad->button |= R_CBUTTONS;
+
+    if (in->buttons & WPAD_IN_D_UP)    pad->button |= U_JPAD;
+    if (in->buttons & WPAD_IN_D_DOWN)  pad->button |= D_JPAD;
+    if (in->buttons & WPAD_IN_D_LEFT)  pad->button |= L_JPAD;
+    if (in->buttons & WPAD_IN_D_RIGHT) pad->button |= R_JPAD;
+
+    pad->stick_x = clampi(in->stick_x, -N64_STICK_RANGE, N64_STICK_RANGE);
+    pad->stick_y = clampi(in->stick_y, -N64_STICK_RANGE, N64_STICK_RANGE);
+}
+#endif
 
 static void ogc_read(OSContPad *pad) {
     // Must happen exactly once per frame. osContGetReadData calls each backend
     // once, so this is the single scan point for the GameCube ports.
-    PAD_ScanPads();
+    const u32 gc_connected = PAD_ScanPads();
+
+#ifdef TARGET_WII
+    // Arbitration, and it is deliberately not the once-a-second re-evaluation
+    // STORY-014 sketched. That rule existed to avoid polling both subsystems
+    // every frame, but neither call is a transaction: PAD_ScanPads reads the SI
+    // registers and WPAD_ScanPads latches data the Bluetooth stack has already
+    // delivered on its own thread. The traffic the rule was protecting against
+    // happens whether or not we ask for it.
+    //
+    // So arbitrate every frame instead, which costs nothing measurable and
+    // removes the second of latency a player would feel swapping controllers.
+    // The rule itself is unchanged and deterministic: a GameCube pad in port 1
+    // wins, otherwise channel 0.
+    if (!(gc_connected & 1)) {
+        struct WpadInput wii;
+        if (ogc_wpad_read(&wii)) {
+            ogc_apply_wpad(&wii, pad);
+        }
+        // Nothing usable on channel 0 -- no peripheral, or a Wiimote with no
+        // Nunchuk. Leave the pad as osContGetReadData zeroed it and return:
+        // there is no GameCube pad to read either.
+        return;
+    }
+#else
+    (void) gc_connected;
+#endif
 
     const u16 held = PAD_ButtonsHeld(0);
 

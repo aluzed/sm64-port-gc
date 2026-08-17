@@ -1,7 +1,8 @@
 # STORY-014 — Wii controllers (`WPAD`): Wiimote+Nunchuk, Classic, GC
 
 **Epic:** 4 — Input
-**Status:** To do
+**Status:** 🟡 **implemented, not yet run on hardware** — Classic and Nunchuk mapped, arbitration
+and hot-unplug done; the on-screen message and rumble remain (see *What is not done* below)
 **Depends on:** STORY-013
 **Estimate:** M (2-3 d)
 **Platform:** Wii only
@@ -109,11 +110,59 @@ constantly while the N64 D-pad only serves debug menus.
 7. **Linking**: add `-lwiiuse -lbte` to `PLATFORM_LDFLAGS` for the Wii target (STORY-002).
    These libraries do not exist on the GameCube side, so guard them properly.
 
+## What was built, and where the plan changed
+
+### The include trap decided the file layout
+
+`<wiiuse/wpad.h>` reaches `<wiiuse/wiiuse.h>`, which on GEKKO includes `<bte/bte.h>`, which
+includes `<gccore.h>`, which brings in `<ogc/gx.h>` — and `Vtx` and `Mtx` there collide with the
+same names in `PR/gbi.h`, which `ultra64.h` supplies. It is the trap already documented at the
+top of `controller_ogc.c`, reached by a longer route.
+
+`controller_ogc.c` needs `ultra64.h` for the N64 button bits, so WPAD cannot live in it. Hence
+a second translation unit, `controller_wpad.c`, which never includes `ultra64.h`, and a seam
+header naming no type from either world. The mapping is therefore in two hops — peripheral to a
+neutral button set in `controller_wpad.c`, neutral to N64 bits in `controller_ogc.c` — and that
+split is load-bearing, not stylistic.
+
+### Arbitration runs every frame, not once a second
+
+Task 4 called for re-evaluating once a second, to avoid polling both subsystems constantly.
+That premise does not hold: neither call is a transaction. `PAD_ScanPads` reads the SI
+registers and `WPAD_ScanPads` latches data the Bluetooth stack has already delivered on its own
+thread — the traffic the rule protected against happens whether or not we ask for it.
+
+Arbitrating every frame costs nothing measurable and removes the second of latency a player
+would feel when swapping controllers. The rule itself is unchanged: a GameCube pad in port 1
+wins, otherwise channel 0.
+
+### Task 7 was already done
+
+`-lwiiuse -lbte` were on the Wii link line since STORY-002.
+
+### Cost
+
+The Wii `.dol` grows by **108 KB** — `sinf`/`cosf` from libm, plus what the Bluetooth stack
+pulls in. Noted against the STORY-005 budget; immaterial on Wii's 24 MB + 64 MB.
+
+## What is not done
+
+- **The on-screen message for a Wiimote with no Nunchuk.** The configuration is detected and
+  refused — inputs stay zeroed, so nothing runs away and nothing crashes — and
+  `ogc_wpad_needs_nunchuk()` exposes the state. But there is no text facility anywhere in
+  `src/pc`, and putting one there means touching the render path; adding it to `src/game` is
+  ruled out by the roadmap's first convention. This belongs with STORY-019, which already owns
+  the HOME button and the exit path.
+- **Rumble** (task 6). Optional, `VERSION=sh` only, and low priority as the story says.
+- **Hardware validation.** Nothing here has run on a Wii. Dolphin can emulate a Nunchuk and a
+  Classic Controller, which covers the mappings; hot-unplug is only honest on hardware.
+
 ## Files touched
 
-- `src/pc/controller/controller_ogc.c`
-- `src/pc/controller/controller_entry_point.c`
-- `Makefile` (`-lwiiuse -lbte` on Wii only)
+- `src/pc/controller/controller_wpad.c` — **new**, the libogc side
+- `src/pc/controller/controller_wpad.h` — **new**, the seam
+- `src/pc/controller/controller_ogc.c` — arbitration and the neutral-to-N64 mapping
+- `Makefile` — nothing to do, `-lwiiuse -lbte` were already there
 
 ## Notes and risks
 
