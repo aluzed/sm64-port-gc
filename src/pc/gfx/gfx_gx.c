@@ -29,6 +29,7 @@
 #include "gfx_cc.h"
 #include "gfx_gx.h"
 #include "gfx_ogc.h"
+#include "gfx_perf.h"
 #include "gfx_rendering_api.h"
 
 // From PR/gbi.h, which we cannot include (see the header comment). These are
@@ -1305,9 +1306,14 @@ static bool gfx_gx_setup_perspective(const float *buf, size_t stride, size_t nve
     // depth is not affine in 1/w, because gfx_pc changed projection inside it,
     // slips through a one-point check and is then drawn through a projection
     // fitted to something else. The mesh comes out as a fan of stretched
-    // slivers, which on screen reads as a crosshatch of thin lines, and
-    // whatever leaves the [-1, 0] range is clipped away outright -- a floor
-    // that disappears.
+    // slivers, and whatever leaves the [-1, 0] range is clipped away outright --
+    // a floor that disappears.
+    //
+    // A crosshatch of thin lines used to be listed here as the visible symptom.
+    // It is struck out: the reporter believes that pattern is the game's own and
+    // present on an N64 too (2026-08-17). The check stands on the two symptoms
+    // that were traced to it -- the vanishing floor, and the intro Mario head
+    // losing its eyes and moustache -- not on that one.
     //
     // The residual is judged against the batch's own depth spread, not an
     // absolute epsilon: an object occupying 2% of the depth range would accept
@@ -1390,6 +1396,11 @@ static u8 float_to_u8(float v) {
 
 static void gfx_gx_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_vbo_num_tris) {
     (void) buf_vbo_len;
+
+    // Everything this function does is CPU work spent filling the FIFO, which
+    // is suspect number one in STORY-018. Charged as one bucket so the log can
+    // separate "the CPU is busy submitting" from "the CPU is busy elsewhere".
+    const uint64_t perf_start = gfx_perf_enabled() ? gfx_perf_now() : 0;
 
     if (cur_shader == NULL) {
         return;
@@ -1707,6 +1718,10 @@ static void gfx_gx_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t bu
         }
     }
     GX_End();
+
+    if (gfx_perf_enabled()) {
+        gfx_perf_account(GFX_PERF_SUBMIT, perf_start);
+    }
 }
 
 // -- lifecycle ---------------------------------------------------------------

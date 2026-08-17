@@ -82,12 +82,12 @@ the game code**. That is the guiding rule for the whole roadmap.
 - [017 — Test strategy: Dolphin first, then real hardware](017-testing-dolphin-hardware.md) 🟢 **it runs on a real GameCube**; formal protocol pending
 
 ### Epic 7 — Performance and polish
-- [018 — Optimisation: GX display lists, cache, GameCube support](018-performance-optimisation.md)
+- [018 — Optimisation: GX display lists, cache, GameCube support](018-performance-optimisation.md) 🟡 **instrumentation built** (`perf_log`), measurement table waiting for a session on hardware; no optimisation attempted until it is filled in
 - [019 — Polish: crash handler, clean exit, release](019-polish-stability-release.md) 🟡 **exit paths done** — HOME, Start+X+Y, RESET and POWER all shut down cleanly and save; exception handler, leak hunt and the release itself remain
 
 ### Open defects
 - [020 — Shadows flicker and drop out](020-shadow-decal-flicker.md) ✅ **fixed and confirmed on hardware**
-- [021 — Textures drop in and out with camera movement](021-texture-dropouts.md) 🟡 hugely reduced by the STORY-009 fit work; one or two cases remain, footage captured
+- [021 — Textures drop in and out with camera movement](021-texture-dropouts.md) 🟢 the wedge and the stray triangles are **fixed and confirmed on a GameCube**; the water-surface dropout remains
 - [022 — Alignment exception entering the castle](022-alignment-traps-audit.md) ✅ **done** — fixed and confirmed on hardware, audit run, `-DCHECK_POOL_ALIGNMENT` guard in place
 
 ## Dependency graph

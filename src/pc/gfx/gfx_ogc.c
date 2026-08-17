@@ -26,6 +26,7 @@
 #include "../configfile.h"
 #include "gfx_ogc.h"
 #include "gfx_pc_aspect.h"
+#include "gfx_perf.h"
 #include "gfx_window_manager_api.h"
 
 #define OGC_FIFO_SIZE (256 * 1024)
@@ -113,6 +114,12 @@ static void gfx_ogc_shutdown(void) {
     // the next program is about to reuse.
     audio_ogc_stop();
     GX_AbortFrame();
+
+    // Before the video goes black, while the storage device is still mounted.
+    // A log that only exists if the player quits politely is the price of not
+    // stalling the frame loop to write it; STORY-019's exit paths are what make
+    // that acceptable.
+    gfx_perf_write_log();
 
     VIDEO_SetBlack(TRUE);
     VIDEO_Flush();
@@ -240,7 +247,15 @@ static void gfx_ogc_init_gx(void) {
 }
 
 static void gfx_ogc_copy_to_xfb(void) {
+    // This first GX_DrawDone is where the CPU blocks until the GP has finished
+    // the frame, so it is the measurement that says whether the GP is the
+    // bottleneck. The second one waits only for the copy, which is short.
+    const uint64_t gp_wait_start = gfx_perf_enabled() ? gfx_perf_now() : 0;
     GX_DrawDone();
+    if (gfx_perf_enabled()) {
+        gfx_perf_account(GFX_PERF_GP_WAIT, gp_wait_start);
+    }
+
     GX_SetZMode(GX_TRUE, GX_LEQUAL, GX_TRUE);
     GX_SetColorUpdate(GX_TRUE);
     GX_CopyDisp(xfb[cur_xfb], GX_TRUE);
@@ -287,7 +302,9 @@ static void gfx_ogc_main_loop(void (*run_one_game_iter)(void)) {
     // The loop is paced by VIDEO_WaitVSync() in swap_buffers_end, so there is
     // no timing logic here.
     while (!should_quit) {
+        gfx_perf_frame_begin();
         run_one_game_iter();
+        gfx_perf_frame_end();
     }
     gfx_ogc_shutdown();
 }
@@ -357,6 +374,10 @@ static void gfx_ogc_swap_buffers_end(void) {
         VIDEO_Flush();
     }
 
+    // Everything below is the frame's idle time. A large figure here is the
+    // good outcome: it is headroom.
+    const uint64_t vsync_start = gfx_perf_enabled() ? gfx_perf_now() : 0;
+
     if (!fifty_hz) {
         for (int i = 0; i < VSYNCS_PER_FRAME; i++) {
             VIDEO_WaitVSync();
@@ -376,6 +397,10 @@ static void gfx_ogc_swap_buffers_end(void) {
         if (now > next_frame_ticks) {
             next_frame_ticks = now + microsecs_to_ticks(GAME_FRAME_USEC);
         }
+    }
+
+    if (gfx_perf_enabled()) {
+        gfx_perf_account(GFX_PERF_VSYNC_WAIT, vsync_start);
     }
 
     if (frame_has_content) {

@@ -1,7 +1,8 @@
 # STORY-018 — Optimisation: GX display lists, cache, GameCube support
 
 **Epic:** 7 — Performance and polish
-**Status:** To do
+**Status:** 🟡 **Task 1 built** — the instrumentation exists and the table below is waiting for a
+session on hardware. No optimisation attempted, by design: task 1 gates the rest.
 **Depends on:** STORY-010, STORY-012, STORY-014
 **Estimate:** L (4-6 d)
 **Platform:** GC + Wii
@@ -63,6 +64,52 @@ original.
    | Bob-omb (summit) | | | | |
    | … | | | | |
 
+   ### Built — how to take the measurement
+
+   Set `perf_log = true` in `sm64config.txt`, play, and **quit through HOME or Start + X + Y**.
+   The log lands next to the save as `perf.log`.
+
+   It is a log and not an on-screen counter for a reason the acceptance criteria did not
+   anticipate: there is no way to draw text anywhere in `src/pc`, and adding one means touching
+   the render path — the same wall STORY-014's Nunchuk message hit. A log is better here
+   regardless. The numbers wanted are from a thirty-minute session across eight scenes, which is
+   not something anyone can read off a corner of the screen while playing.
+
+   One line per second of play, microseconds unless noted:
+
+   ```
+   # sec frames fps frame_avg frame_max cpu_avg submit_avg submit_max
+   #     gp_wait_avg gp_wait_max vsync_avg vsync_max
+   ```
+
+   How to read it, which is the whole point of measuring before optimising:
+
+   - **`vsync_avg` large** — the console is idle waiting for the retrace. There is headroom and
+     nothing to optimise.
+   - **`gp_wait_avg` large** — the CPU is blocked in `GX_DrawDone` waiting for the GP. The
+     bottleneck is the GP, and no amount of CPU work will move it. Suspects 1 and 4 in the list
+     above are then the wrong tree.
+   - **`submit_avg` large** — the CPU is busy filling the FIFO. That is suspect 1, and
+     optimisation #2 (indexed vertex arrays) is the answer.
+   - **`cpu_avg` large with the other three small** — the CPU is busy somewhere else, which
+     points at `gfx_pc` interpretation, suspect 4.
+   - **`frame_max`** — the hitch column, and the one that answers "no hitch longer than 100 ms".
+
+   The buffer holds 2048 seconds, about 34 minutes, and covers the session STORY-019 asks for.
+   Past that the oldest seconds are overwritten and **the log says so in a header line**: a
+   silently truncated measurement is worse than a short one.
+
+   Off by default and allocated lazily, so a normal build carries neither cost nor footprint.
+   It costs 2.4 KB of binary.
+
+   Two caveats worth stating before anyone reads a number from it:
+
+   - **Dolphin figures are meaningless here**, as this story already says. It runs on an x86
+     hundreds of times faster than a Gekko.
+   - **The log only exists if the game is quit politely.** Writing it during play would stall the
+     frame loop and corrupt the very thing being measured, so it is written on the shutdown path.
+     That is why STORY-019's exit work had to come first — and why pulling the plug loses it.
+
 2. **Optimisation #1 — vertex submission.** If measurement confirms the diagnosis, replace
    direct-mode `GX_Begin` with an **indexed vertex array**:
    ```c
@@ -109,6 +156,9 @@ original.
 
 ## Files touched
 
+- `src/pc/gfx/gfx_perf.c` / `.h` — **new**, the frame-timing log
+- `src/pc/configfile.c` / `.h` — the `perf_log` option
+- `src/pc/pc_main.c` — initialisation, after the config and the storage mount
 - `src/pc/gfx/gfx_gx.c`
 - `src/pc/gfx/gfx_ogc.c` (instrumentation, fps counter)
 - `src/pc/gfx/gfx_pc.c` (alignment, only if measured necessary)

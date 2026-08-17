@@ -8,6 +8,9 @@ extern bool         configWidescreen;
 // the tube. Zero by default, which draws exactly as before -- a value that
 // suits one set is wrong on the next, so it has to be the player's to choose.
 extern unsigned int configOverscan;
+// Writes a frame-timing log to the storage device on exit. Off by default, and
+// its buffer is only allocated when it is on. See STORY-018.
+extern bool         configPerfLog;
 extern unsigned int configKeyA;
 extern unsigned int configKeyB;
 extern unsigned int configKeyStart;

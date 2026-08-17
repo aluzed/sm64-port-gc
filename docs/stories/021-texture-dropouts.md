@@ -1,7 +1,8 @@
 # STORY-021 — Textures drop in and out with camera movement
 
 **Epic:** 2 — GX rendering
-**Status:** To do — reported under Dolphin and confirmed on **real hardware**, 2026-08-16
+**Status:** 🟢 The wedge and the stray triangles are **fixed and confirmed on a GameCube**
+(2026-08-17). The water-surface dropout, the defect this story opened on, is still open.
 **Depends on:** STORY-008, STORY-009
 **Estimate:** M — the cheap explanations are already gone
 **Platform:** GC + Wii
@@ -138,6 +139,15 @@ Being unable to *measure* a projection is not being unable to *use* one. The bat
 the last fit that held and lets the GP clip, exactly as the two branches below it already do.
 With no usable vertex at all the batch is entirely behind the eye and the GP discards it, so
 any consistent projection serves.
+
+**Confirmed on a GameCube, 2026-08-17.** The triangles are gone and the wedge has not returned.
+
+One postscript on how nearly this was missed. The first report after the fix was that the
+triangles were still there — from a `dist/` package dated two minutes after the commit that
+*introduced* them. `make dist` does not regenerate itself, and nothing says so: the tester was
+running the faulty binary. The fix had also been treated as validated on the strength of a
+single clean screenshot of the castle lobby, which cannot show an intermittent defect. Lesson 4
+of the roadmap, made twice in one afternoon.
 
 The collapse is left in place. It is bounded and correct in isolation, and it is now only
 reachable through `-DGFX_GX_HW_PERSP=0`.

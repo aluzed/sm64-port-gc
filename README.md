@@ -190,6 +190,7 @@ With no storage at all the game runs normally and simply does not save.
 |---|---|---|
 | `widescreen` | `false` | GameCube only — a Wii is asked for its own setting. Sets the picture's aspect, which the HUD and the field of view follow |
 | `overscan` | `0` | Pixels of margin inset on every edge. Televisions crop 5–10 % of the picture; raise this until nothing important sits off the tube |
+| `perf_log` | `false` | Writes `perf.log` next to the save when you quit, one line per second of play: frame time, CPU, GP wait, vsync wait. Only written if you quit through HOME or Start + X + Y |
 
 Overscan shrinks the image toward the centre rather than moving it, because a set crops both
 edges — shifting would only trade a lost right edge for a lost left one. Start around `8` on a

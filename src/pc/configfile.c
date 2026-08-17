@@ -48,12 +48,14 @@ unsigned int configKeyStickRight = 0x20;
 // a GameCube has no such setting, so the player has to say.
 bool configWidescreen            = false;
 unsigned int configOverscan      = 0;
+bool configPerfLog               = false;
 
 
 static const struct ConfigOption options[] = {
     {.name = "fullscreen",     .type = CONFIG_TYPE_BOOL, .boolValue = &configFullscreen},
     {.name = "widescreen",     .type = CONFIG_TYPE_BOOL, .boolValue = &configWidescreen},
     {.name = "overscan",       .type = CONFIG_TYPE_UINT, .uintValue = &configOverscan},
+    {.name = "perf_log",       .type = CONFIG_TYPE_BOOL, .boolValue = &configPerfLog},
     {.name = "key_a",          .type = CONFIG_TYPE_UINT, .uintValue = &configKeyA},
     {.name = "key_b",          .type = CONFIG_TYPE_UINT, .uintValue = &configKeyB},
     {.name = "key_start",      .type = CONFIG_TYPE_UINT, .uintValue = &configKeyStart},

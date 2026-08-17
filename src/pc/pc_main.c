@@ -19,6 +19,7 @@
 #include "gfx/gfx_sdl.h"
 #include "gfx/gfx_dummy.h"
 #include "gfx/gfx_ogc.h"
+#include "gfx/gfx_perf.h"
 #include "gfx/gfx_gx.h"
 
 #include "audio/audio_api.h"
@@ -179,6 +180,12 @@ void main_func(void) {
 
     configfile_load(CONFIG_FILE_PATH);
     atexit(save_config);
+
+#ifdef TARGET_OGC
+    // After the config is read -- it decides whether to allocate anything at
+    // all -- and after storage is mounted, since that is where the log lands.
+    gfx_perf_init();
+#endif
 
 #ifdef TARGET_WEB
     emscripten_set_main_loop(em_main_loop, 0, 0);
