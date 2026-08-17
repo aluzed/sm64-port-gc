@@ -79,7 +79,7 @@ the game code**. That is the guiding rule for the whole roadmap.
 
 ### Epic 6 — Distribution
 - [016 — Packaging: `.dol`, `meta.xml` and a `make dist` target](016-packaging-dol-homebrew.md) ✅ **done** — `make dist` on both targets
-- [017 — Test strategy: Dolphin first, then real hardware](017-testing-dolphin-hardware.md) 🟢 **it runs on a real GameCube**; formal protocol pending
+- [017 — Test strategy: Dolphin first, then real hardware](017-testing-dolphin-hardware.md) 🟢 **it runs on a real GameCube**; the hardware session protocol is written — run it end to end before tagging anything
 
 ### Epic 7 — Performance and polish
 - [018 — Optimisation: GX display lists, cache, GameCube support](018-performance-optimisation.md) 🟡 **instrumentation built** (`perf_log`), measurement table waiting for a session on hardware; no optimisation attempted until it is filled in
