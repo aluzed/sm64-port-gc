@@ -156,11 +156,16 @@ static void ogc_read(OSContPad *pad) {
     if (held & PAD_BUTTON_B)     pad->button |= B_BUTTON;
     if (held & PAD_TRIGGER_Z)    pad->button |= Z_TRIG;
 
-    // Start passes through unless X and Y are down with it: otherwise every
-    // attempt to quit opens the pause menu on the way out. X and Y are mapped
-    // to nothing, so this costs the player nothing they could have wanted.
-    if ((held & PAD_BUTTON_START)
-        && !((held & (PAD_BUTTON_X | PAD_BUTTON_Y)) == (PAD_BUTTON_X | PAD_BUTTON_Y))) {
+    // Start always passes through.
+    //
+    // It used to be suppressed while X and Y were also held, so that quitting
+    // did not open the pause menu on the way out. That trade was backwards: a
+    // pause menu flashing during a deliberate exit is cosmetic, and a Start
+    // button that sometimes does nothing is a defect in the game. Reported as
+    // exactly that -- "sometimes I press pause and get no menu" -- which is what
+    // the suppression looks like from the sofa, since nothing tells the player
+    // which buttons the port considers reserved.
+    if (held & PAD_BUTTON_START) {
         pad->button |= START_BUTTON;
     }
 
