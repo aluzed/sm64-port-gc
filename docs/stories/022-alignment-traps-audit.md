@@ -1,7 +1,7 @@
 # STORY-022 — Alignment exception entering the castle, and the audit it implies
 
 **Epic:** 0 — Foundations
-**Status:** 🟢 Fixed and **confirmed on hardware**; the audit remains
+**Status:** ✅ **Done** — fixed and confirmed on hardware, audit run, guard in place
 **Depends on:** STORY-003
 **Estimate:** S for the fix (done), M for the audit
 **Platform:** GC + Wii
@@ -75,16 +75,17 @@ first, arbitrarily far from the allocation that caused it.
 3. ✅ **Done.** `-DCHECK_POOL_ALIGNMENT` stops the moment a pool returns a misaligned pointer,
    instead of at whichever float first touches it. Verified not to fire through boot and the
    attract demo, so every pool allocation on that path is 8-aligned.
-4. **Consider whether Dolphin can be made stricter.** If some configuration raises alignment
-   exceptions instead of emulating them, the emulator loop regains coverage of this class.
-   Worth twenty minutes to find out; if not, record that it cannot and move on.
+4. ⛔ **Dropped: whether Dolphin can be made to raise alignment exceptions.** It would only buy
+   back emulator coverage of a class that is already covered where it matters, by the guard in
+   task 3 — which checks the property at the one place it can be violated, on hardware and in
+   the emulator alike. Not worth carrying as an open item.
 
 ## Acceptance criteria
 
 - [x] The castle loads on a real GameCube.
 - [x] The audit in task 2 has been run and its result recorded here.
 - [x] The guard in task 3 exists.
-- [ ] Task 4, whether Dolphin can be made to raise alignment exceptions, is still open.
+- [x] Task 4 closed as dropped, with the reason recorded above.
 
 ## Audit result
 

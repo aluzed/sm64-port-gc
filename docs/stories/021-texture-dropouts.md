@@ -24,6 +24,7 @@ Intermittent, never fatal, and present on both Dolphin and hardware.
 | `memalign` failing on the larger textures | `-DGFX_GX_DEBUG_TEXFAIL` binds a magenta fallback whenever a texture object is invalid. No magenta ever appeared |
 | The `GX_TF_RGBA8` swizzle | Dolphin's texture dump shows all 114 uploaded textures correct, including the non-square 64×32, 32×64 and 128×16 where a stride error would show first |
 | The previous texture being left bound | this **was** a real bug and is fixed: the load used to be skipped when a texture object was invalid, leaving whatever was bound before. There is an explicit fallback now |
+| The STORY-010 alpha dither | `-DGFX_GX_NOISE=0` drops the dither and its screen-space texgen entirely. The triangles survive it, so the newest change in the tree is not the cause (2026-08-17) |
 
 So the textures we upload are correct, they are bound, and their objects are valid.
 
@@ -66,6 +67,96 @@ quarter of the screen.
 The CPU path also stops mirroring: a vertex with `w <= 0` now collapses to the centre of the
 near plane rather than being flung. Only reachable when fewer than three vertices are in front
 of the eye, where there is nothing to fit — degenerate either way, but bounded.
+
+### The trade above was priced wrong — 2026-08-17
+
+Reported from hardware on the build that carried it: **walking at the junction of two map faces
+and turning the camera makes polygons appear that should be hidden from where Mario stands.**
+The wedge is gone; what replaced it is geometry showing through the ground.
+
+That is the "sorting artefact" the fix accepted, and calling it that understated it. A
+constant-depth projection does not make the depth *approximate*, it makes it **constant**: the
+whole batch lands on one plane, so a large floor stops occluding what is behind it. And the
+batches that reach the fallback are exactly the ones that must occlude — large floor and wall
+polygons seen nearly edge-on are precisely the shapes whose `1/w` spread collapses. The trade
+bought a clipped wedge and sold the depth buffer, on the geometry least able to afford it.
+
+The error was treating `p` and `q` as a property of the batch. They are a property of
+`gfx_pc`'s projection matrix: every batch drawn through the same matrix recovers the same pair,
+and a batch fails to recover it only when it is too ill-conditioned to *measure* — never
+because its depth is genuinely different.
+
+**Fix: a batch that cannot fit a projection borrows the last one that did.** The pair is
+recorded whenever a fit holds, and checked against the borrowing batch's own vertices before
+use, so a projection change is noticed rather than assumed away. Constant depth stays, demoted
+to what it should always have been: the last resort when nothing has fitted yet, or when the
+recorded pair demonstrably belongs to another projection.
+
+The same borrow now covers the residual-failure case, which previously used a fit the residual
+check had just declared wrong.
+
+The borrow changed nothing. Reported the same day, under Dolphin: same triangle, same edge,
+100% reproducible. So the constant-depth fallback was not the cause either, and this fix is
+retained on its own merits — inventing a depth was still wrong — not as a cure.
+
+### The report that moves the search — 2026-08-17
+
+**The triangles appear during the intro.** That is worth more than the edge in the castle
+grounds, on two counts. It is seconds from boot with no navigation, so the loop is short. And
+the intro draws the Mario head through the Goddard renderer, not level geometry — so whatever
+this is, it is not specific to a surface, a level, or a texture.
+
+Two changes were candidates for "it was not there before". One is now excluded by measurement
+(the dither, see the ruled-out table). The other is the near-plane commit, and
+`-DGFX_GX_DEBUG_OLD_NEARPLANE` reverts it in place — both halves, the batch exemption and the
+CPU path's mirroring — to date the regression without a bisect. **Reverted, the triangles are
+gone.** So the commit introduced them.
+
+### Closed: the one refusal that was never covered — 2026-08-17
+
+`-DGFX_GX_DEBUG_PROJ_TINT` marks each batch by the route it took through
+`gfx_gx_setup_perspective`. **The triangles come out magenta: the CPU divide.** Everything
+else keeps its texture.
+
+That is the whole answer. Since the near-plane commit, a batch crossing the near plane goes to
+the GP whatever its fit — except for one refusal that was never touched:
+
+```c
+if (usable < 3) {
+    return false;
+}
+```
+
+Fewer than three vertices in front of the eye. The commit's reasoning applies to this batch
+*more* strongly than to any other — it is the one most behind the eye — and it was the one case
+still handed to a path that cannot clip. Worse in combination with the commit's other half:
+the CPU path stopped flinging a `w <= 0` vertex out of frame, where it was discarded, and now
+collapses it onto `(0, 0)`. The centre of the screen. So the triangle is dragged into the
+middle of the image rather than off the edge of it.
+
+Being unable to *measure* a projection is not being unable to *use* one. The batch now borrows
+the last fit that held and lets the GP clip, exactly as the two branches below it already do.
+With no usable vertex at all the batch is entirely behind the eye and the GP discards it, so
+any consistent projection serves.
+
+The collapse is left in place. It is bounded and correct in isolation, and it is now only
+reachable through `-DGFX_GX_HW_PERSP=0`.
+
+### Method note, second entry
+
+Three instruments were built before one of them measured anything. The first painted every
+batch flat by path, which made the nominal path — almost the whole screen — a single green
+field with no landmarks: unusable, and correctly refused by the reporter. The second tinted the
+vertex colour, which the TEV is free to ignore, so surfaces went unmarked for two entirely
+different reasons and an unmarked surface meant nothing. The third read `dbg_proj_path` before
+`gfx_gx_setup_perspective` had set it, so its two halves disagreed about which batch they were
+looking at.
+
+Only the third was caught before it produced a false conclusion, and only because it shipped
+with `-DGFX_GX_DEBUG_PROJ_TINT_SELFTEST`, which forces every batch onto a marked path so the
+screen must come out entirely magenta. It did not: grass came out white. **Calibrate an
+instrument before trusting a negative result from it.** A view that cannot fail visibly will
+eventually report silence as evidence.
 
 ## The remaining lead
 

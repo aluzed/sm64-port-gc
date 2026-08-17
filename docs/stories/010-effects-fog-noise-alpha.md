@@ -1,7 +1,7 @@
 # STORY-010 — Effects: fog, noise, alpha compare, Z decals
 
 **Epic:** 2 — GX rendering
-**Status:** 🟡 Task 0 and alpha compare done; fog, noise and Z decal validation remain — ⬅️ **next**
+**Status:** 🟡 All four effects **implemented**; none of the four **validated on screen** — ⬅️ **next**
 **Depends on:** STORY-007, STORY-008, STORY-009
 **Estimate:** M (2-3 d)
 **Platform:** GC + Wii
@@ -75,7 +75,7 @@ fade transitions, so the rendering is faithful to the original game.
 
 ## Tasks
 
-### 1. Fog
+### 1. Fog — ✅ implemented, unvalidated
 
 GX has a hardware fog unit (`GX_SetFog`), but it computes the factor from screen Z — whereas
 `gfx_pc` supplies an already-computed **per-vertex factor** (`v_arr[i]->color.a` reused as the
@@ -91,6 +91,13 @@ Two approaches:
 
 Note that `gfx_pc` forces shade alpha to 1.0 when fog is active, so the vertex alpha channel
 is free to carry the factor.
+
+**(A) is what is implemented.** The fog colour and factor travel as the RGBA of `GX_VA_CLR1`,
+a second rasterised channel enabled only for shaders carrying `opt_fog`, and the final stage
+reads them as `RASC` and `RASA`: `out = d + (1-c)*a + c*b` with `d = 0`, `a = CPREV`,
+`b = RASC`, `c = RASA` is the mix exactly, with no arithmetic of our own. Build with
+`-DGFX_GX_FOG=0` to drop the stage — the A/B to run whenever a scene looks washed out, since
+an over-applied fog and a missing texture are hard to tell apart by eye.
 
 ### 2. Texture edge (alpha compare) — ✅ implemented
 
@@ -148,19 +155,44 @@ The OpenGL backend uses `glPolygonOffset`. GX has no direct equivalent; options,
 
 Start with (1), check visually, only move to (2) if z-fighting remains.
 
-### 4. Noise
+### 4. Noise — ✅ implemented, unvalidated
 
 The OpenGL shader computes a pseudo-random value from the frame number and the screen
 position. TEV cannot generate randomness.
 
-Option retained for v1: **a small noise texture** (64×64, generated at boot), bound to
-`GX_TEXMAP2`, sampled with coordinates offset each frame via `GX_LoadTexMtxImm`. One TEV stage
-combines it into alpha. Cost: a 16 KB texture and one TEV stage, only for the `shader_id`s
-carrying `SHADER_OPT_NOISE`.
+Read the reference before translating it, because the name is misleading:
 
-**Low priority**: `opt_noise` is used by very few SM64 combiners (fades, and the dissolve
-effect on some objects). Shipping the story without it and completing later is acceptable —
-it is the only one of the four that can be deferred.
+```glsl
+texel.a *= floor(random(vec3(floor(gl_FragCoord.xy * (240.0 / window_height)), frame_count)) + 0.5);
+```
+
+`floor(random + 0.5)` is **0 or 1**, not a continuous grain. So this is a screen door — half
+the cells keep their alpha and half lose it — which is what makes SM64's fades *dissolve*
+rather than cross-fade. It applies only when `opt_alpha` is set, and it comes **after** fog in
+the chain.
+
+Implemented as planned: a 64×64 `GX_TF_I8` texture of pre-rolled zeroes and ones generated at
+boot by an LCG, on `GX_TEXMAP2`, with one final TEV stage doing `APREV * TEXA`.
+
+Three things the plan did not anticipate:
+
+- **The coordinate has to be screen space**, or the pattern swims with the geometry instead of
+  staying put on screen. `gfx_pc` supplies no such coordinate, so it comes from a texgen on
+  `GX_TG_POS`.
+- **The two projection paths submit different spaces**, so one texgen matrix will not do. The
+  CPU path submits NDC and wants `q = 1`; the hardware path submits view space with `z = -w`
+  and wants `q = -z`, so `GX_TG_MTX3x4` does the divide. The constant term has to ride `z` in
+  that second case or it would be divided too and the pattern would shrink with distance. The
+  matrix is therefore loaded **per batch**, after the projection is chosen.
+- **I8 is tiled in 8×4 blocks**, but this texture needs no swizzle: the content is random, so
+  any permutation of it is equally random. Stated in the code because the absence of the
+  swizzle every other texture needs looks like an omission.
+
+The 240-line virtual raster is reproduced, so one dither cell is one N64 pixel whatever the
+output resolution — the stipple stays the same size at 240p, 480i and 480p. The pattern is
+re-offset by a whole number of texels each frame rather than slid, since a smooth shift would
+read as the dither crawling. `-DGFX_GX_NOISE=0` drops the stage, which degrades to a smooth
+fade rather than an artefact, as this story requires.
 
 ## Files touched
 

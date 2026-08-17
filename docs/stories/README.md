@@ -64,7 +64,7 @@ the game code**. That is the guiding rule for the whole roadmap.
 - [007 — Translating the N64 colour combiner into TEV stages](007-colour-combiner-tev.md) ✅ **done**
 - [008 — Textures: GX swizzle, cache and wrap modes](008-gx-textures.md) ✅ **done**
 - [009 — Vertex format and triangle submission](009-vertex-format-draw-triangles.md) ✅ **done** — hardware perspective on, near-plane clipping handled by the GP
-- [010 — Effects: fog, noise, alpha compare, Z decals](010-effects-fog-noise-alpha.md) 🟡 depth and alpha compare done; fog, noise, decal validation remain
+- [010 — Effects: fog, noise, alpha compare, Z decals](010-effects-fog-noise-alpha.md) 🟡 all four implemented; **validation on screen pending**
 - [011 — Video modes, resolution, PAL/NTSC and 16:9](011-video-modes-resolution.md) 🟡 cadence, mode selection, 480p and 16:9 done; overscan remains
 
 ### Epic 3 — Audio
@@ -88,7 +88,7 @@ the game code**. That is the guiding rule for the whole roadmap.
 ### Open defects
 - [020 — Shadows flicker and drop out](020-shadow-decal-flicker.md) ✅ **fixed and confirmed on hardware**
 - [021 — Textures drop in and out with camera movement](021-texture-dropouts.md) 🟡 hugely reduced by the STORY-009 fit work; one or two cases remain, footage captured
-- [022 — Alignment exception entering the castle](022-alignment-traps-audit.md) 🟢 fixed and confirmed on hardware; the audit for the same class remains
+- [022 — Alignment exception entering the castle](022-alignment-traps-audit.md) ✅ **done** — fixed and confirmed on hardware, audit run, `-DCHECK_POOL_ALIGNMENT` guard in place
 
 ## Dependency graph
 

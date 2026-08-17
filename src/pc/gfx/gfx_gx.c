@@ -90,6 +90,34 @@
 #define GFX_GX_FOG 1
 #endif
 
+// Alpha dither ("noise"). Set to 0 to drop the stage and let the shaders that
+// ask for it draw at full alpha, which is a smooth fade rather than a stippled
+// one -- the degradation STORY-010 allows if this ever has to be switched off.
+#ifndef GFX_GX_NOISE
+#define GFX_GX_NOISE 1
+#endif
+
+// Side of the square dither texture, in texels. The pattern repeats across the
+// screen every this many cells; 64 is small enough to stay in texture cache and
+// large enough that the tiling is not readable as a grid.
+#define GFX_GX_NOISE_SIZE 64
+
+// The virtual raster the reference backend quantises to: it computes the dither
+// on floor(gl_FragCoord.xy * (240 / window_height)), so one dither cell is one
+// N64 pixel whatever the real resolution. Reproducing that here is what keeps
+// the stipple the same size at 240p, 480i and 480p.
+#define GFX_GX_NOISE_RASTER_H 240.0f
+#define GFX_GX_NOISE_RASTER_W 320.0f
+
+// Calibration for the projection-path view: force every batch onto a marked
+// path, so the screen must come out entirely magenta. Any surface that keeps
+// its texture under this flag is a surface the marking cannot reach -- and an
+// unmarked surface in the real view would then mean nothing. Run it once before
+// trusting a negative result.
+#ifdef GFX_GX_DEBUG_PROJ_TINT_SELFTEST
+#define GFX_GX_DEBUG_PROJ_TINT 1
+#endif
+
 // The debug views that replace the whole TEV chain with a single PASSCLR stage
 // and paint the vertex colour directly. They bypass the shader, so anything the
 // shader would have set up -- the fog channel, for one -- must be skipped at
@@ -336,6 +364,13 @@ static void gfx_gx_plan_form(const struct CCFeatures *cc, int comp, struct TevFo
     }
 }
 
+// The dither texture and the frame counter that animates it. Declared here
+// rather than with the texture pool below because the TEV setup binds them, and
+// that runs earlier in the file.
+static GXTexObj noise_tex_obj;
+static bool noise_tex_ready;
+static uint32_t noise_frame;
+
 // Builds the whole TEV plan for a shader, given which combiner input (if any)
 // is fed per vertex through the rasteriser.
 static void gfx_gx_build_tev(struct ShaderProgram *prg, int varying_input) {
@@ -493,6 +528,45 @@ static void gfx_gx_build_tev(struct ShaderProgram *prg, int varying_input) {
         }
     }
 
+    // Noise, as one more final stage -- after fog, which is the order the
+    // reference fragment shader uses (combiner, texture edge, fog, noise).
+    //
+    // The reference computes a per-pixel coin flip and multiplies alpha by it:
+    //   texel.a *= floor(random(screen_cell, frame) + 0.5)
+    // so alpha is either kept or zeroed, half the cells each. That is a screen
+    // door, not a soft grain, and it is what makes SM64's fades dissolve rather
+    // than cross-fade.
+    //
+    // TEV cannot generate randomness, so the flip comes from a texture of
+    // pre-rolled zeroes and ones sampled in screen space (see the texgen in
+    // gfx_gx_emit_tev). The stage itself is the multiply:
+    //   out = d + (1 - c) * a + c * b, with a = 0, b = APREV, c = the sampled
+    // flip, d = 0, which is APREV * flip.
+    //
+    // Colour passes through untouched: the reference only ever multiplies the
+    // alpha channel.
+    if (cc->opt_noise && cc->opt_alpha && GFX_GX_NOISE && !GFX_GX_FLAT_DEBUG
+        && stage < MAX_TEV_STAGES) {
+        struct TevStage *s = &prg->stages[stage++];
+        // GX requires the texgens in use to be 0..n-1 with no gap, so the
+        // dither takes coordinate 1 only when the shader's own texture has
+        // already taken 0.
+        s->tex_coord = (use_tex0 || use_tex1) ? GX_TEXCOORD1 : GX_TEXCOORD0;
+        s->tex_map = GX_TEXMAP2;
+        s->chan = GX_COLORNULL;
+        s->col_a = GX_CC_ZERO; s->col_b = GX_CC_ZERO; s->col_c = GX_CC_ZERO;
+        s->col_d = GX_CC_CPREV;
+        s->col_op = GX_TEV_ADD;
+        s->col_clamp = GX_TRUE;
+        s->out_reg = GX_TEVPREV;
+
+        s->alp_a = GX_CA_ZERO; s->alp_b = GX_CA_APREV; s->alp_c = GX_CA_TEXA;
+        s->alp_d = GX_CA_ZERO;
+        s->alp_op = GX_TEV_ADD;
+        s->alp_clamp = GX_TRUE;
+        s->alpha_konst_one = false;
+    }
+
     prg->num_stages = (uint8_t) stage;
 }
 
@@ -512,12 +586,26 @@ static void gfx_gx_emit_tev(const struct ShaderProgram *prg) {
     const bool use_tex = (prg->cc.used_textures[0] || prg->cc.used_textures[1])
                          && GFX_GX_TEXTURES_IMPLEMENTED;
 
+    // The dither needs a coordinate of its own, generated from the position
+    // rather than supplied per vertex: it has to land in screen space, so that
+    // the pattern stays put on screen while geometry moves through it. The
+    // matrix is loaded per batch in draw_triangles, because which one is
+    // correct depends on the projection that batch chose.
+    const bool use_noise = prg->cc.opt_noise && prg->cc.opt_alpha && GFX_GX_NOISE;
+
+    u8 ngen = 0;
     if (use_tex) {
-        GX_SetNumTexGens(1);
         GX_SetTexCoordGen(GX_TEXCOORD0, GX_TG_MTX2x4, GX_TG_TEX0, GX_IDENTITY);
-    } else {
-        GX_SetNumTexGens(0);
+        ngen++;
     }
+    if (use_noise) {
+        GX_SetTexCoordGen(GX_TEXCOORD0 + ngen, GX_TG_MTX3x4, GX_TG_POS, GX_TEXMTX0);
+        ngen++;
+        if (noise_tex_ready) {
+            GX_LoadTexObj(&noise_tex_obj, GX_TEXMAP2);
+        }
+    }
+    GX_SetNumTexGens(ngen);
 
     // A second rasterised channel exists only to carry the fog colour and
     // factor. Enabling it unconditionally would cost a channel on every shader.
@@ -688,6 +776,80 @@ static void gfx_gx_init_fallback_texture(void) {
                   GX_REPEAT, GX_REPEAT, GX_FALSE);
     GX_InitTexObjFilterMode(&fallback_tex_obj, GX_NEAR, GX_NEAR);
     fallback_tex_ready = true;
+}
+
+static void gfx_gx_init_noise_texture(void) {
+    // GX_TF_I8: one byte per texel, the intensity replicated into RGB *and*
+    // alpha, so the value the TEV reads as TEXA is simply the byte. 4 KB.
+    static u8 texels[GFX_GX_NOISE_SIZE * GFX_GX_NOISE_SIZE] __attribute__((aligned(32)));
+
+    // I8 is tiled in 8x4 blocks, and every other texture in this backend has to
+    // be swizzled into that layout on upload. This one does not, and the reason
+    // is worth stating because the absence looks like an omission: the content
+    // is random, so any permutation of it is equally random.
+    //
+    // A plain LCG, run once at boot. The pattern only has to be uncorrelated to
+    // the eye. Bit 16 is the coin flip -- the low bits of an LCG are the weak
+    // ones -- reproducing the reference's floor(random + 0.5): half the cells
+    // keep their alpha, half lose it.
+    uint32_t s = 0x1234567u;
+    for (size_t i = 0; i < sizeof(texels); i++) {
+        s = s * 1664525u + 1013904223u;
+        texels[i] = (s & 0x10000u) ? 255 : 0;
+    }
+
+    DCFlushRange(texels, sizeof(texels));
+    GX_InitTexObj(&noise_tex_obj, texels, GFX_GX_NOISE_SIZE, GFX_GX_NOISE_SIZE,
+                  GX_TF_I8, GX_REPEAT, GX_REPEAT, GX_FALSE);
+    // Nearest, always. A filtered dither is a grey haze, not a screen door.
+    GX_InitTexObjFilterMode(&noise_tex_obj, GX_NEAR, GX_NEAR);
+    noise_tex_ready = true;
+}
+
+// Screen-space coordinates for the dither texture, as a texgen matrix.
+//
+// GX generates the coordinate from the position *before* the projection matrix,
+// so which matrix is correct depends on what the batch submitted -- and the two
+// paths in this backend submit different spaces. GX_TG_MTX3x4 emits (s, t, q)
+// and divides, which is what lets one mechanism serve both.
+static void gfx_gx_load_noise_texmtx(bool perspective) {
+    // One dither cell per pixel of the reference's 240-line virtual raster, and
+    // NDC spans [-1, 1], hence the half.
+    const float ku = 0.5f * GFX_GX_NOISE_RASTER_W / (float) GFX_GX_NOISE_SIZE;
+    const float kv = 0.5f * GFX_GX_NOISE_RASTER_H / (float) GFX_GX_NOISE_SIZE;
+
+    // Reseed per frame by jumping a whole number of texels, not by sliding:
+    // a smooth shift would read as the dither crawling across the screen, where
+    // the reference redraws it from scratch every frame. The texture repeats,
+    // so any offset is in range.
+    const float ou = (float) ((noise_frame * 37u) % GFX_GX_NOISE_SIZE)
+                     / (float) GFX_GX_NOISE_SIZE;
+    const float ov = (float) ((noise_frame * 97u + 13u) % GFX_GX_NOISE_SIZE)
+                     / (float) GFX_GX_NOISE_SIZE;
+    const float cu = ku + ou;
+    const float cv = kv + ov;
+
+    Mtx m;
+    memset(m, 0, sizeof(m));
+    m[0][0] = ku;
+    m[1][1] = kv;
+
+    if (perspective) {
+        // View space, with z carrying -w (see gfx_gx_load_persp). Dividing by
+        // q = w turns x into NDC -- and the constant term has to ride z as well,
+        // or it would be divided too and the pattern would shrink with distance.
+        m[0][2] = -cu;
+        m[1][2] = -cv;
+        m[2][2] = -1.0f;
+    } else {
+        // The CPU path already divided, so the position is NDC and no further
+        // divide is wanted: q = 1.
+        m[0][3] = cu;
+        m[1][3] = cv;
+        m[2][3] = 1.0f;
+    }
+
+    GX_LoadTexMtxImm(m, GX_TEXMTX0, GX_MTX3x4);
 }
 
 static void gfx_gx_bind_texture(const struct GXTexture *t, u8 map) {
@@ -881,6 +1043,23 @@ static void gfx_gx_set_use_alpha(bool use_alpha) {
 enum ProjMode { PROJ_NONE, PROJ_ORTHO, PROJ_PERSP };
 
 static enum ProjMode cur_proj_mode;
+
+// Which route through the projection choice this batch took, for
+// -DGFX_GX_DEBUG_PROJ_TINT. Recorded even when the view is compiled out, so the
+// branches that set it stay one shape whether or not the measurement is
+// enabled -- they are exactly the branches under suspicion, and an #ifdef
+// through the middle of them would let the measured build diverge from the
+// shipped one. Declared outside GFX_GX_HW_PERSP because the CPU path sets it
+// too, and -DGFX_GX_HW_PERSP=0 is a supported A/B.
+enum ProjPath {
+    PROJ_PATH_CPU,          // divided on the CPU; no near-plane clipping
+    PROJ_PATH_FIT,          // fitted from this batch, residual held
+    PROJ_PATH_BORROW,       // could not fit; used the last fit that held
+    PROJ_PATH_BAD_FIT,      // fit failed and nothing to borrow; used it anyway
+    PROJ_PATH_CONST_DEPTH,  // no spread and nothing to borrow; one depth
+};
+static enum ProjPath dbg_proj_path;
+
 #if GFX_GX_HW_PERSP
 static float cur_proj_mt22, cur_proj_mt23;
 #endif
@@ -912,6 +1091,37 @@ static void gfx_gx_load_persp(float mt22, float mt23) {
     cur_proj_mode = PROJ_PERSP;
     cur_proj_mt22 = mt22;
     cur_proj_mt23 = mt23;
+}
+
+// The last fit that held. The relation z/w = p + q/w describes gfx_pc's
+// projection matrix, not the batch: every batch drawn through the same matrix
+// recovers the same pair, and a batch only fails to recover it when it is too
+// ill-conditioned to measure -- not because its depth is different.
+//
+// So a batch that cannot fit anything itself can borrow. That matters because
+// the alternative is a constant depth, and a constant depth is not a small
+// error: it pins a whole polygon to one plane, so a floor stops occluding what
+// is behind it and geometry shows through the ground. Reported from hardware as
+// polygons appearing at the junction of two map faces when the camera turns.
+static float last_fit_p, last_fit_q;
+static bool have_last_fit;
+
+// Whether p + q/w reproduces the batch's own depth, over every vertex in front
+// of the eye. Guards the borrow above: if gfx_pc has changed projection since
+// the pair was recorded, this is what notices.
+static bool gfx_gx_fit_holds(const float *buf, size_t stride, size_t nverts,
+                             float p, float q, float tol) {
+    for (size_t i = 0; i < nverts; i++) {
+        const float w = buf[i * stride + 3];
+        if (w <= 1e-6f) {
+            continue;
+        }
+        const float iw = 1.0f / w;
+        if (fabsf((p + q * iw) - buf[i * stride + 2] * iw) > tol) {
+            return false;
+        }
+    }
+    return true;
 }
 
 // Returns true and sets up a perspective projection when the batch has varying
@@ -946,8 +1156,47 @@ static bool gfx_gx_setup_perspective(const float *buf, size_t stride, size_t nve
         if (iw > iw_hi) { iw_hi = iw; hi = i; }
     }
 
+#ifdef GFX_GX_DEBUG_OLD_NEARPLANE
+    // Restores the behaviour from before "Clip near-plane batches on the GP":
+    // crossing the near plane earned a batch no exemption, so a bad fit sent it
+    // to the CPU divide like any other. Exists to answer one question -- did
+    // that commit introduce the triangles, or were they already there -- and
+    // nothing else. Delete it once the question is closed.
+    crosses_near_plane = false;
+#endif
+
+    // Fewer than three vertices in front of the eye: nothing to fit a projection
+    // from. That was made a flat refusal, and the refusal is what produced the
+    // triangles -- confirmed from the projection-path view, where they came out
+    // magenta, the colour of the CPU divide.
+    //
+    // The reasoning behind sending near-plane batches to the GP applies here
+    // more strongly than anywhere else, not less: this is the batch that is
+    // *most* behind the eye. Refusing it hands it to a CPU path that cannot
+    // clip, and that path now collapses a vertex with w <= 0 onto (0, 0) -- the
+    // centre of the screen -- so the triangle is dragged into the middle of the
+    // image instead of being flung out of frame and discarded. That collapse is
+    // bounded and correct in isolation; it is only visible because the batch
+    // should never have reached it.
+    //
+    // Being unable to *measure* the projection is not being unable to *use* one.
+    // Borrow it, exactly as the two branches below already do, and let the GP
+    // clip. With no usable vertex at all the whole batch is behind the eye and
+    // the GP discards it, so any consistent projection will do.
     if (usable < 3) {
-        return false;
+        if (!crosses_near_plane) {
+            return false;   // genuinely degenerate, and safely affine
+        }
+        const float bias = gx_state.zmode_decal ? GFX_GX_DECAL_BIAS : 0.0f;
+        if (have_last_fit) {
+            gfx_gx_load_persp(1.0f - last_fit_p + bias, last_fit_q);
+            dbg_proj_path = PROJ_PATH_BORROW;
+            return true;
+        }
+        gfx_gx_load_persp(1.0f - (usable > 0 ? buf[lo * stride + 2] * iw_lo : 0.0f) + bias,
+                          0.0f);
+        dbg_proj_path = PROJ_PATH_CONST_DEPTH;
+        return true;
     }
 
     // Not enough spread in 1/w to fit anything meaningful. That covers 2D
@@ -966,16 +1215,37 @@ static bool gfx_gx_setup_perspective(const float *buf, size_t stride, size_t nve
     // corner as a huge flat wedge. That is the defect reported from a real
     // console when the camera turns and a polygon edge reaches the screen
     // boundary. Such a batch takes the hardware path whatever the fit looks
-    // like, because only the GP's clipper can cut it correctly -- with a
-    // constant-depth projection if there is nothing better to fit, which keeps
-    // x and y exact and leaves only the depth approximate, on a batch whose
-    // depth barely varies anyway.
+    // like, because only the GP's clipper can cut it correctly.
+    //
+    // What it is drawn with is a separate question, and the first answer was
+    // wrong. A constant-depth projection keeps x and y exact, but "the depth is
+    // approximate" understates what it does: the whole batch lands on one
+    // plane. The batches that reach here are large floor and wall polygons seen
+    // nearly edge-on -- precisely the ones that must occlude -- so the trade
+    // bought a clipped wedge and sold the depth buffer. Borrow the projection
+    // instead: it is the same matrix, and a batch that cannot measure it is
+    // still drawn by it.
     if (iw_hi - iw_lo < 0.01f * iw_hi) {
         if (!crosses_near_plane) {
             return false;
         }
-        gfx_gx_load_persp(1.0f - (buf[lo * stride + 2] * iw_lo)
-                          + (gx_state.zmode_decal ? GFX_GX_DECAL_BIAS : 0.0f), 0.0f);
+        const float bias = gx_state.zmode_decal ? GFX_GX_DECAL_BIAS : 0.0f;
+        // No spread means no depth span to judge against, so the check is a
+        // loose one: it asks whether the borrowed pair is the same projection,
+        // not whether it is accurate to the last bit.
+        const float borrow_tol =
+            fmaxf(1e-3f, 1e-5f * fmaxf(fabsf(last_fit_p) + fabsf(last_fit_q) * iw_hi, 1.0f));
+        if (have_last_fit
+            && gfx_gx_fit_holds(buf, stride, nverts, last_fit_p, last_fit_q, borrow_tol)) {
+            gfx_gx_load_persp(1.0f - last_fit_p + bias, last_fit_q);
+            dbg_proj_path = PROJ_PATH_BORROW;
+            return true;
+        }
+        // Nothing to borrow -- no perspective batch has fitted yet, or the one
+        // that did belongs to another projection. Constant depth is then the
+        // last resort it was always meant to be.
+        gfx_gx_load_persp(1.0f - (buf[lo * stride + 2] * iw_lo) + bias, 0.0f);
+        dbg_proj_path = PROJ_PATH_CONST_DEPTH;
         return true;
     }
 
@@ -1017,24 +1287,39 @@ static bool gfx_gx_setup_perspective(const float *buf, size_t stride, size_t nve
     // nothing: GX clips z_ndc outside [-1, 0] whichever path produced it, and
     // the CPU path writes zn - 1, so the same vertex is cut either way. All
     // that matters here is whether the fit is faithful.
-    for (size_t i = 0; i < nverts; i++) {
-        const float w = buf[i * stride + 3];
-        if (w <= 1e-6f) {
-            continue;
+    const bool fit_holds = gfx_gx_fit_holds(buf, stride, nverts, p, q, tol);
+
+    const float bias = gx_state.zmode_decal ? GFX_GX_DECAL_BIAS : 0.0f;
+
+    if (!fit_holds) {
+        // Same exception as above: a batch crossing the near plane has to be
+        // clipped by the GP whatever its depth looks like.
+        if (!crosses_near_plane) {
+            return false;
         }
-        const float iw = 1.0f / w;
-        const float zn = buf[i * stride + 2] * iw;
-        if (fabsf((p + q * iw) - zn) > tol) {
-            // Same exception as above: a batch crossing the near plane has to
-            // be clipped by the GP whatever its depth looks like. An imperfect
-            // depth on one batch is a sorting artefact; a CPU divide by a
-            // negative w is a wedge across a quarter of the screen.
-            if (!crosses_near_plane) {
-                return false;
-            }
-            break;
+        // The local fit is known wrong here -- that is what the residual just
+        // said -- so prefer a pair that was measured on a batch that could be
+        // measured, when it still describes this one.
+        if (have_last_fit
+            && gfx_gx_fit_holds(buf, stride, nverts, last_fit_p, last_fit_q, tol)) {
+            gfx_gx_load_persp(1.0f - last_fit_p + bias, last_fit_q);
+            dbg_proj_path = PROJ_PATH_BORROW;
+            return true;
         }
+        // Neither pair describes the batch. Draw it through the local fit
+        // anyway: wrong depth on one batch is a sorting artefact, a CPU divide
+        // by a negative w is a wedge across a quarter of the screen. Do not
+        // record a fit that failed.
+        gfx_gx_load_persp(1.0f - p + bias, q);
+        dbg_proj_path = PROJ_PATH_BAD_FIT;
+        return true;
     }
+
+    // A fit that held is the projection gfx_pc is drawing with, so it is worth
+    // keeping for the batches that cannot recover it themselves.
+    last_fit_p = p;
+    last_fit_q = q;
+    have_last_fit = true;
 
     // GX gives z_ndc = -mt22 + mt23/w, and the CPU path writes z_ndc = zn - 1
     // with zn = p + q/w. Matching the two: mt22 = 1 - p, mt23 = q.
@@ -1048,8 +1333,8 @@ static bool gfx_gx_setup_perspective(const float *buf, size_t stride, size_t nve
     // in step. The previous attempt at a decal bias sidestepped this by forcing
     // decals onto the CPU divide, which cost them perspective-correct
     // interpolation for no reason.
-    const float bias = gx_state.zmode_decal ? GFX_GX_DECAL_BIAS : 0.0f;
     gfx_gx_load_persp(1.0f - p + bias, q);
+    dbg_proj_path = PROJ_PATH_FIT;
     return true;
 }
 #endif  // GFX_GX_HW_PERSP
@@ -1172,7 +1457,45 @@ static void gfx_gx_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t bu
 #endif
     if (!hw_persp) {
         gfx_gx_load_ortho();
+        dbg_proj_path = PROJ_PATH_CPU;
     }
+
+    // Has to follow the projection choice above, not precede it: the dither's
+    // texgen reads the submitted position, and which space that is depends on
+    // the path this batch just took.
+    if (cc->opt_noise && cc->opt_alpha && GFX_GX_NOISE && !GFX_GX_FLAT_DEBUG) {
+        gfx_gx_load_noise_texmtx(hw_persp);
+    }
+
+#ifdef GFX_GX_DEBUG_PROJ_TINT_SELFTEST
+    dbg_proj_path = PROJ_PATH_CPU;   // everything marked; see the flag's comment
+#endif
+
+#ifdef GFX_GX_DEBUG_PROJ_TINT
+    // Mark flagged batches in a way no shader can route around.
+    //
+    // Placement is the whole point, and the first attempt got it wrong: this
+    // block sat before gfx_gx_setup_perspective, so it read the *previous*
+    // batch's path while the vertex colour below read the current one. The two
+    // halves of the instrument disagreed. The calibration flag caught it --
+    // grass came out flat white, meaning the TEV override had fired on a batch
+    // the colour switch considered nominal. It must run after the projection
+    // choice, like the dither above and for the same reason.
+    //
+    // The mark replaces the chain rather than tinting the vertex colour, which
+    // was the attempt before that: only one combiner input is routed through
+    // the rasteriser (see gfx_gx_build_tev), so a shader with no varying input
+    // never reads the channel and a tint went nowhere. One PASSCLR stage is
+    // unconditional. Texgens and the vertex format are left untouched so the
+    // stream still matches what GX expects; the stage samples no texture.
+    if (dbg_proj_path != PROJ_PATH_FIT) {
+        GX_SetNumTevStages(1);
+        GX_SetTevOp(GX_TEVSTAGE0, GX_PASSCLR);
+        GX_SetTevOrder(GX_TEVSTAGE0, GX_TEXCOORDNULL, GX_TEXMAP_NULL, GX_COLOR0A0);
+        // Force the shader's own chain to be rebuilt for the next batch.
+        cur_shader->built_for_varying = -128;
+    }
+#endif
 
     GX_Begin(GX_TRIANGLES, GX_VTXFMT0, (u16) (buf_vbo_num_tris * 3));
     for (size_t i = 0; i < buf_vbo_num_tris * 3; i++) {
@@ -1196,7 +1519,13 @@ static void gfx_gx_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t bu
             // plane to the GP, which clips it properly, so this is only reached
             // when fewer than three vertices are in front of the eye and there
             // is nothing to fit. Degenerate either way; bounded is better.
+#ifdef GFX_GX_DEBUG_OLD_NEARPLANE
+            // The other half of the same revert: the CPU path used to mirror a
+            // vertex with w < 0 through the origin rather than collapse it.
+            const float inv_w = (w != 0.0f) ? 1.0f / w : 0.0f;
+#else
             const float inv_w = (w > 1e-6f) ? 1.0f / w : 0.0f;
+#endif
             // Depth conventions do not line up. z_is_from_0_to_1() made gfx_pc
             // give us 0 at the near plane and 1 at the far plane; GX wants -1
             // near and 0 far. Hence the -1 shift rather than a negation.
@@ -1286,12 +1615,41 @@ static void gfx_gx_draw_triangles(float buf_vbo[], size_t buf_vbo_len, size_t bu
             GX_Color4u8((u8) (h >> 24), (u8) (h >> 16), (u8) (h >> 8), 255);
         }
 #else
-        if (has_input && varying >= 0) {
-            const float *c = v + input_off + varying * input_size;
-            GX_Color4u8(float_to_u8(c[0]), float_to_u8(c[1]), float_to_u8(c[2]),
-                        cc->opt_alpha ? float_to_u8(c[3]) : 255);
-        } else {
-            GX_Color4u8(255, 255, 255, 255);
+        {
+            u8 cr = 255, cg = 255, cb = 255, ca = 255;
+            if (has_input && varying >= 0) {
+                const float *c = v + input_off + varying * input_size;
+                cr = float_to_u8(c[0]);
+                cg = float_to_u8(c[1]);
+                cb = float_to_u8(c[2]);
+                ca = cc->opt_alpha ? float_to_u8(c[3]) : 255;
+            }
+#ifdef GFX_GX_DEBUG_PROJ_TINT
+            // Which route through gfx_gx_setup_perspective this batch took.
+            //
+            // Only the paths under suspicion are marked, and they are marked
+            // flat -- the TEV override above sees to that. The nominal path is
+            // left byte-for-byte as a normal build draws it, textures and all,
+            // so the scene stays navigable and a marked surface means exactly
+            // one thing. In particular, if the defect keeps its texture, it
+            // took the good path and the projection fit is exonerated.
+            //   magenta = divided on the CPU: no near-plane clipping, affine
+            //             interpolation. Produces both the wedge and the smear
+            //   yellow  = could not fit, borrowed the last fit that held
+            //   red     = the fit failed and there was nothing to borrow
+            //   cyan    = no spread and nothing to borrow: one depth for the
+            //             whole batch
+            // Alpha is forced opaque on marked batches: a blend must not be
+            // able to hide the answer.
+            switch (dbg_proj_path) {
+                case PROJ_PATH_FIT:     break;   // untouched, renders normally
+                case PROJ_PATH_CPU:     cr = 255; cg =   0; cb = 255; ca = 255; break;
+                case PROJ_PATH_BORROW:  cr = 255; cg = 255; cb =   0; ca = 255; break;
+                case PROJ_PATH_BAD_FIT: cr = 255; cg =   0; cb =   0; ca = 255; break;
+                default:                cr =   0; cg = 255; cb = 255; ca = 255; break;
+            }
+#endif
+            GX_Color4u8(cr, cg, cb, ca);
         }
 #endif
 
@@ -1334,6 +1692,7 @@ static void gfx_gx_init(void) {
     GX_SetChanCtrl(GX_COLOR1A1, GX_DISABLE, GX_SRC_REG, GX_SRC_VTX, 0, GX_DF_NONE, GX_AF_NONE);
 
     gfx_gx_init_fallback_texture();
+    gfx_gx_init_noise_texture();
 
     GX_SetCullMode(GX_CULL_NONE);
     GX_SetAlphaCompare(GX_ALWAYS, 0, GX_AOP_AND, GX_ALWAYS, 0);
@@ -1392,6 +1751,11 @@ static void gfx_gx_start_frame(void) {
     GX_InvVtxCache();
     GX_InvalidateTexAll();
     cur_shader = NULL;
+
+    // Advances the dither pattern. The reference feeds the frame counter into
+    // its hash, so the flip is redrawn every frame; here the frame number picks
+    // a fresh offset into the texture instead.
+    noise_frame++;
 
     // Resynchronise the state cache with the hardware.
     //
