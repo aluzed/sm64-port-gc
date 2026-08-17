@@ -195,7 +195,26 @@ With no storage at all the game runs normally and simply does not save.
 | C-stick | Right stick | D-pad | C buttons |
 | D-pad | D-pad | — | D-pad |
 
-A Wii Remote without a Nunchuk is not supported: SM64 needs an analog stick.
+A Wii Remote without a Nunchuk is not supported: SM64 needs an analog stick. The Remote is
+detected and its inputs ignored rather than mapped onto the D-pad — HOME still works, so you
+can always get back out.
+
+With both a GameCube pad and a Wii peripheral connected, the GameCube pad in port 1 wins.
+
+#### Quitting
+
+There is no window to close, so the game has to be told to leave. Every route below saves your
+configuration first.
+
+| Console | Action | Result |
+|---|---|---|
+| Wii | **HOME**, on the Remote or the Classic Controller | back to the Homebrew Channel |
+| GameCube | **Start + X + Y**, held for one second | back to the loader |
+| Both | the console's **RESET** button | back to the loader |
+| Wii | the console's **POWER** button | powers off |
+
+X and Y are unmapped in SM64, so the GameCube combination cannot be hit by accident; holding it
+does not open the pause menu on the way out.
 
 #### Reporting a crash
 

@@ -18,6 +18,8 @@
 
 #include <ultra64.h>
 
+#include "../gfx/gfx_ogc.h"
+
 #include "controller_api.h"
 #include "controller_ogc.h"
 #include "controller_wpad.h"
@@ -39,6 +41,18 @@
 
 // C-stick deflection needed to latch a C button.
 #define OGC_CSTICK_THRESHOLD 40
+
+// How long Start + X + Y must be held before the game exits.
+//
+// The GameCube has no HOME button, so the way out has to be a combination --
+// and a combination that quits the game cannot be one a player can hit by
+// accident mid-jump. X and Y are mapped to nothing in SM64, so the pair is free
+// and the hold is what makes it deliberate.
+#define OGC_EXIT_HOLD_MS 1000
+
+// Start + X + Y hold state, for the exit combination above.
+static bool exit_combo_held;
+static uint32_t exit_combo_since;
 
 static int clampi(int v, int lo, int hi) {
     if (v < lo) return lo;
@@ -96,9 +110,19 @@ static void ogc_read(OSContPad *pad) {
     // removes the second of latency a player would feel swapping controllers.
     // The rule itself is unchanged and deterministic: a GameCube pad in port 1
     // wins, otherwise channel 0.
+    struct WpadInput wii;
+    const bool wii_usable = ogc_wpad_read(&wii);
+
+    // HOME quits, whatever the arbitration decided and whatever is plugged in.
+    // It is read even when a GameCube pad has won the port, because a player
+    // holding a Wiimote should not have to work out which controller the game
+    // is currently listening to in order to get out of it.
+    if (ogc_wpad_home_held()) {
+        gfx_ogc_request_quit(false);
+    }
+
     if (!(gc_connected & 1)) {
-        struct WpadInput wii;
-        if (ogc_wpad_read(&wii)) {
+        if (wii_usable) {
             ogc_apply_wpad(&wii, pad);
         }
         // Nothing usable on channel 0 -- no peripheral, or a Wiimote with no
@@ -112,10 +136,33 @@ static void ogc_read(OSContPad *pad) {
 
     const u16 held = PAD_ButtonsHeld(0);
 
+    // Start + X + Y, held. Timed on the clock rather than counted in frames,
+    // because the frame rate is 30 or 25 depending on the video mode and "one
+    // second" should not mean 1.2 s on a PAL console.
+    if ((held & (PAD_BUTTON_START | PAD_BUTTON_X | PAD_BUTTON_Y))
+        == (PAD_BUTTON_START | PAD_BUTTON_X | PAD_BUTTON_Y)) {
+        const uint32_t now = gfx_ogc_get_millis();
+        if (!exit_combo_held) {
+            exit_combo_held = true;
+            exit_combo_since = now;
+        } else if (now - exit_combo_since >= OGC_EXIT_HOLD_MS) {
+            gfx_ogc_request_quit(false);
+        }
+    } else {
+        exit_combo_held = false;
+    }
+
     if (held & PAD_BUTTON_A)     pad->button |= A_BUTTON;
     if (held & PAD_BUTTON_B)     pad->button |= B_BUTTON;
     if (held & PAD_TRIGGER_Z)    pad->button |= Z_TRIG;
-    if (held & PAD_BUTTON_START) pad->button |= START_BUTTON;
+
+    // Start passes through unless X and Y are down with it: otherwise every
+    // attempt to quit opens the pause menu on the way out. X and Y are mapped
+    // to nothing, so this costs the player nothing they could have wanted.
+    if ((held & PAD_BUTTON_START)
+        && !((held & (PAD_BUTTON_X | PAD_BUTTON_Y)) == (PAD_BUTTON_X | PAD_BUTTON_Y))) {
+        pad->button |= START_BUTTON;
+    }
 
     if (held & PAD_BUTTON_UP)    pad->button |= U_JPAD;
     if (held & PAD_BUTTON_DOWN)  pad->button |= D_JPAD;

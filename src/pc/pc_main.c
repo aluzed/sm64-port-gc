@@ -169,6 +169,14 @@ void main_func(void) {
     storage_ogc_init();
 #endif
 
+#ifdef TARGET_OGC
+    // Registered before save_config so that it runs after it: atexit fires
+    // handlers last-registered-first, and powering the console off has to be
+    // the very last thing that happens. Reversing these two loses the
+    // configuration every time the player uses the POWER button.
+    atexit(gfx_ogc_finish_shutdown);
+#endif
+
     configfile_load(CONFIG_FILE_PATH);
     atexit(save_config);
 

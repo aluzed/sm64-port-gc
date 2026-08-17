@@ -65,6 +65,15 @@ bool ogc_wpad_read(struct WpadInput *out);
 // so that a later story can say so on screen; see STORY-014 and STORY-019.
 bool ogc_wpad_needs_nunchuk(void);
 
+// True while HOME is held, on the Wiimote or on a Classic Controller.
+//
+// Read independently of everything above, and deliberately so: it must work
+// when ogc_wpad_read has just refused the peripheral. A player holding a
+// Wiimote with no Nunchuk cannot play, and would otherwise have no way out
+// except pulling the plug -- which is the whole thing STORY-019 exists to
+// prevent.
+bool ogc_wpad_home_held(void);
+
 #endif // TARGET_WII
 
 #endif

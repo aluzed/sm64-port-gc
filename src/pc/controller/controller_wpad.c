@@ -36,6 +36,7 @@
 
 static bool wpad_ready;
 static bool wpad_wiimote_alone;
+static bool wpad_home_held;
 
 void ogc_wpad_init(void) {
     // Starts the Bluetooth stack, and it is slow -- up to a couple of seconds.
@@ -156,6 +157,7 @@ static unsigned wpad_nunchuk(const nunchuk_t *nc, u32 held, struct WpadInput *ou
 bool ogc_wpad_read(struct WpadInput *out) {
     memset(out, 0, sizeof(*out));
     wpad_wiimote_alone = false;
+    wpad_home_held = false;
 
     if (!wpad_ready) {
         return false;
@@ -179,6 +181,10 @@ bool ogc_wpad_read(struct WpadInput *out) {
 
     const u32 held = wd->btns_h;
 
+    // Latched before the switch below, so that it survives every path through
+    // it -- including the one that refuses the peripheral outright.
+    wpad_home_held = (held & (WPAD_BUTTON_HOME | WPAD_CLASSIC_BUTTON_HOME)) != 0;
+
     switch (wd->exp.type) {
         case WPAD_EXP_CLASSIC:
             out->buttons = wpad_classic(&wd->exp.classic, held, out);
@@ -198,6 +204,10 @@ bool ogc_wpad_read(struct WpadInput *out) {
 
 bool ogc_wpad_needs_nunchuk(void) {
     return wpad_wiimote_alone;
+}
+
+bool ogc_wpad_home_held(void) {
+    return wpad_home_held;
 }
 
 #endif // TARGET_WII

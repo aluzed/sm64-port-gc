@@ -1,7 +1,8 @@
 # STORY-019 — Polish: crash handler, clean exit, release
 
 **Epic:** 7 — Performance and polish
-**Status:** To do
+**Status:** 🟡 **the exit paths are done** (tasks 1–3), not yet run on hardware; the exception
+handler, the leak hunt and the release itself remain
 **Depends on:** STORY-016, STORY-017, STORY-018
 **Estimate:** M (2-3 d)
 **Platform:** GC + Wii
@@ -22,11 +23,12 @@ information when it crashes, so the port is usable day to day.
 
 ## Acceptance criteria
 
-- [ ] **HOME** (Wiimote) or **Start+X+Y** / the RESET button (GameCube) exits the game, saves
-      the configuration and returns to the Homebrew Channel / the loader.
-- [ ] The console's **POWER** button powers off cleanly (save config, then
-      `SYS_ResetSystem(SYS_POWEROFF, …)`).
-- [ ] The console's **RESET** button restarts cleanly.
+- [x] **HOME** (Wiimote) or **Start+X+Y** / the RESET button (GameCube) exits the game, saves
+      the configuration and returns to the Homebrew Channel / the loader. *Written; not yet run
+      on hardware.*
+- [x] The console's **POWER** button powers off cleanly (save config, then
+      `SYS_ResetSystem(SYS_POWEROFF, …)`). *The save was the bug; see below.*
+- [x] The console's **RESET** button restarts cleanly. *Written; not yet run on hardware.*
 - [ ] On a CPU exception, a readable screen shows the exception type, the faulting address and
       a call stack — instead of a silent freeze.
 - [ ] No detectable memory leak over a 30-minute session with repeated level changes (free
@@ -82,12 +84,68 @@ information when it crashes, so the port is usable day to day.
 7. **Documentation review.** Check that `README.md` takes someone new from zero to a running
    game with no prior knowledge of the port.
 
+## Done so far — the exit paths (tasks 1–3)
+
+### Task 1 was already in place
+
+The RESET and POWER callbacks, and the `should_quit` flag, landed with STORY-004 and raise a
+flag and nothing else, as required.
+
+### A bug the task list did not predict: POWER lost the configuration
+
+`gfx_ogc_shutdown` called `SYS_ResetSystem(SYS_POWEROFF, …)` **before** `exit(0)`, and
+`SYS_ResetSystem` does not return. `atexit(save_config)` therefore never ran on that path. RESET
+and HOME saved correctly; the POWER button silently discarded whatever had changed since the
+last save.
+
+The fix is an ordering one, and the ordering is the whole point. Powering off moves into
+`gfx_ogc_finish_shutdown()`, which `pc_main` registers with `atexit` **before** it registers
+`save_config` — `atexit` fires handlers last-registered-first, so the config is written and the
+console powers off after. Shutdown itself now always ends in `exit(0)`.
+
+### Task 2: the engines that keep running on their own
+
+Shutdown now calls `audio_ogc_stop()` and `GX_AbortFrame()` before blanking the screen. There is
+no OS here to reclaim a device: the audio DMA keeps walking its buffer and the GP keeps
+consuming a FIFO whose memory the next program is about to use.
+
+`audio_ogc_stop()` is deliberately **not** part of `AudioAPI`. That interface is shared with
+every other platform and none of them needs it — their process ends and the OS cleans up. It
+unregisters the DMA callback before stopping the engine, because the callback re-arms from
+whatever is still queued and stopping first leaves a window where the interrupt undoes the stop.
+
+### Task 3: the way out
+
+- **Wii** — HOME, on the Remote or the Classic Controller. Read independently of the arbitration
+  and of whether the peripheral was accepted at all, so that a player holding a Remote with no
+  Nunchuk — who cannot play — can still leave without pulling the plug.
+- **GameCube** — Start + X + Y held for one second. Timed on the clock rather than counted in
+  frames: the frame rate is 30 or 25 depending on the video mode, and "one second" should not
+  mean 1.2 s on a PAL console. X and Y are unmapped in SM64, so the pair is free; Start is
+  suppressed while both are held, or every attempt to quit would open the pause menu on the way
+  out.
+
+Documented in `README.md` under *Quitting*.
+
+## What is not done
+
+- **Task 4, the exception handler.** Untouched.
+- **Task 5, the leak hunt.** Untouched. The story names the likely site — `gfx_pc.c` resetting
+  `gfx_texture_cache.pool_pos` to 0 without releasing the GX buffers behind it — and that is
+  still the place to look first.
+- **Tasks 6 and 7, the release.** Correctly blocked: the story's own note says not to tag until
+  STORY-017 records a hardware validation, and none of this has run on a console.
+
 ## Files touched
 
-- `src/pc/gfx/gfx_ogc.c`
-- `src/pc/pc_main.c`
-- `src/pc/gfx/gfx_gx.c` (texture release)
-- `README.md`
+- `src/pc/gfx/gfx_ogc.c` — shutdown sequence, the `atexit` finisher, a millisecond clock
+- `src/pc/gfx/gfx_ogc.h` — the finisher and the clock
+- `src/pc/pc_main.c` — `atexit` registration order
+- `src/pc/audio/audio_ogc.c` / `.h` — `audio_ogc_stop()`
+- `src/pc/controller/controller_ogc.c` — the GameCube exit combination
+- `src/pc/controller/controller_wpad.c` / `.h` — HOME
+- `README.md` — the *Quitting* section
+- `src/pc/gfx/gfx_gx.c` (texture release) — still to do, task 5
 - `docs/stories/README.md` (status updates)
 
 ## Notes and risks

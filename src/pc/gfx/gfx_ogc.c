@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "../audio/audio_ogc.h"
 #include "../configfile.h"
 #include "gfx_ogc.h"
 #include "gfx_pc_aspect.h"
@@ -90,18 +91,36 @@ static void on_power_pressed(void) {
 }
 #endif
 
-static void gfx_ogc_shutdown(void) {
-    VIDEO_SetBlack(TRUE);
-    VIDEO_Flush();
-    VIDEO_WaitVSync();
-
+// Registered by pc_main *before* its own atexit(save_config), so that it runs
+// after it: atexit handlers fire last-registered-first.
+//
+// The ordering is the whole point, and getting it wrong is silent. Powering off
+// from gfx_ogc_shutdown directly -- which is what this used to do -- never
+// reaches exit(), so the config was written on the RESET and HOME paths and
+// quietly lost every time the player used the POWER button.
+void gfx_ogc_finish_shutdown(void) {
 #ifdef TARGET_WII
     if (should_power_off) {
         SYS_ResetSystem(SYS_POWEROFF, 0, 0);
     }
 #endif
-    // On Wii the loader installs a return stub, so exit() goes back to the
-    // Homebrew Channel. SYS_ResetSystem is the fallback when it does not.
+}
+
+static void gfx_ogc_shutdown(void) {
+    // Stop the engines that keep running on their own before tearing anything
+    // down. There is no OS here to reclaim a device: the audio DMA would keep
+    // walking its buffer, and the GP would keep consuming a FIFO whose memory
+    // the next program is about to reuse.
+    audio_ogc_stop();
+    GX_AbortFrame();
+
+    VIDEO_SetBlack(TRUE);
+    VIDEO_Flush();
+    VIDEO_WaitVSync();
+
+    // atexit runs save_config, then gfx_ogc_finish_shutdown. On Wii the loader
+    // installs a return stub, so exit() goes back to the Homebrew Channel;
+    // SYS_ResetSystem in the finisher is the fallback when it does not.
     exit(0);
 }
 
@@ -373,6 +392,10 @@ static double gfx_ogc_get_time(void) {
 
 uint64_t gfx_ogc_get_ticks(void) {
     return gettime();
+}
+
+uint32_t gfx_ogc_get_millis(void) {
+    return (uint32_t) ticks_to_millisecs(gettime());
 }
 
 uint32_t gfx_ogc_framebuffer_width(void) {

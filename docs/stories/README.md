@@ -83,7 +83,7 @@ the game code**. That is the guiding rule for the whole roadmap.
 
 ### Epic 7 — Performance and polish
 - [018 — Optimisation: GX display lists, cache, GameCube support](018-performance-optimisation.md)
-- [019 — Polish: crash handler, clean exit, release](019-polish-stability-release.md)
+- [019 — Polish: crash handler, clean exit, release](019-polish-stability-release.md) 🟡 **exit paths done** — HOME, Start+X+Y, RESET and POWER all shut down cleanly and save; exception handler, leak hunt and the release itself remain
 
 ### Open defects
 - [020 — Shadows flicker and drop out](020-shadow-decal-flicker.md) ✅ **fixed and confirmed on hardware**

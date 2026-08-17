@@ -62,6 +62,20 @@ static void audio_ogc_dma_callback(void) {
     audio_ogc_start_locked();
 }
 
+void audio_ogc_stop(void) {
+    // Unregister before stopping, not after. The callback re-arms the engine
+    // from whatever is still queued, so stopping first leaves a window in which
+    // the interrupt starts another transfer and the stop is undone.
+    u32 level;
+    _CPU_ISR_Disable(level);
+    queued = 0;
+    dma_running = false;
+    _CPU_ISR_Restore(level);
+
+    AUDIO_RegisterDMACallback(NULL);
+    AUDIO_StopDMA();
+}
+
 static bool audio_ogc_init(void) {
     read_idx = 0;
     write_idx = 0;
